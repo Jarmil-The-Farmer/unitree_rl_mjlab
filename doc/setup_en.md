@@ -62,22 +62,6 @@ git clone https://github.com/unitreerobotics/unitree_rl_mjlab.git
 sudo apt install -y libyaml-cpp-dev libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev
 ```
 
-#### 2.2.1 Install Mujoco-Warp
-
-Mujoco-Warp is a GPU-optimized extension of the MuJoCo physics simulator developed by Google DeepMind.
-It is designed to leverage NVIDIA GPUs for high-performance simulation and rendering.
-Install it using the following command:
-
-```bash
-pip install "mujoco-warp@git+https://github.com/google-deepmind/mujoco_warp@9491175b7cbea87e28d3e3e67733095317c33398"
-```
-or
-```bash
-pip install "git+ssh://git@github.com/google-deepmind/mujoco_warp@9491175b7cbea87e28d3e3e67733095317c33398"
-```
-
-#### 2.2.2 Install Remaining Dependencies
-
 All other dependencies are specified in the setup.py file.
 Navigate to the project root directory and install them with:
 

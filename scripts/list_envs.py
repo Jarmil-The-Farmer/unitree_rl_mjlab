@@ -3,7 +3,9 @@
 import tyro
 from prettytable import PrettyTable
 
+import mjlab
 import mjlab.tasks  # noqa: F401
+import src.tasks
 from mjlab.tasks.registry import list_tasks
 
 
@@ -40,7 +42,7 @@ def list_environments(keyword: str | None = None):
 
 
 def main():
-  return tyro.cli(list_environments)
+  return tyro.cli(list_environments, config=mjlab.TYRO_FLAGS)
 
 
 if __name__ == "__main__":

@@ -3,9 +3,9 @@ from typing import Any
 import numpy as np
 import torch
 import tyro
-from moviepy import ImageSequenceClip
 from tqdm import tqdm
 
+import mjlab
 from mjlab.entity import Entity
 from mjlab.scene import Scene
 from mjlab.sim.sim import Simulation, SimulationCfg
@@ -304,7 +304,7 @@ def run_sim(
           "body_ang_vel_w",
         ):
           log[k] = np.stack(log[k], axis=0)
-        np.savez(f"./mjlab/motions/g1/{output_name}", **log)  # type: ignore[arg-type]
+        np.savez(f"./src/assets/motions/g1/{output_name}", **log)  # type: ignore[arg-type]
 
 
 def main(
@@ -399,4 +399,4 @@ def main(
 
 
 if __name__ == "__main__":
-  tyro.cli(main)
+  tyro.cli(main, config=mjlab.TYRO_FLAGS)

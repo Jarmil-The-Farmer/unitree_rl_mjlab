@@ -43,23 +43,25 @@ The basic workflow for using reinforcement learning to achieve motion control is
 Run the following command to train a velocity tracking policy:
 
 ```bash
-python scripts/train.py Mjlab-Velocity-Flat-Unitree-G1 --env.scene.num-envs=4096
+python scripts/train.py Unitree-G1-Flat --env.scene.num-envs=4096
 ```
 
 Multi-GPU Training: Scale to multiple GPUs using --gpu-ids:
 
 ```bash
-python scripts/train.py Mjlab-Velocity-Flat-Unitree-G1 \
+python scripts/train.py Unitree-G1-Flat \
   --gpu-ids 0 1 \
   --env.scene.num-envs=4096
 ```
 
 - The first argument (e.g., Mjlab-Velocity-Flat-Unitree-G1) specifies the training task.
 Available velocity tracking tasks:
-  - Mjlab-Velocity-Flat-Unitree-Go2
-  - Mjlab-Velocity-Flat-Unitree-G1
-  - Mjlab-Velocity-Flat-Unitree-G1-23DOF
-  - Mjlab-Velocity-Flat-Unitree-H1_2
+  - Unitree-Go2-Flat
+  - Unitree-G1-Flat
+  - Unitree-G1-23Dof-Flat
+  - Unitree-H1_2-Flat
+  - Unitree-A2-Flat
+  - Unitree-R1-Flat
 
 > [!NOTE]
 > For more details, refer to the mjlab documentation:
@@ -77,20 +79,20 @@ Prepare csv motion files in mjlab/motions/g1/ and convert them to npz format:
 
 ```bash
 python scripts/csv_to_npz.py \
---input-file mjlab/motions/g1/dance1_subject2.csv \
+--input-file src/assets/motions/g1/dance1_subject2.csv \
 --output-name dance1_subject2.npz \
 --input-fps 30 \
 --output-fps 50
 ```
 
-**npz files will be stored at:**：`mjlab/motions/g1/...`
+**npz files will be stored at:**：`src/motions/g1/...`
 
 #### 2.2 Training
 
 After generating the NPZ file, launch imitation training:
 
 ```bash
-python scripts/train.py Mjlab-Tracking-Flat-Unitree-G1 --motion_file=mjlab/motions/g1/dance1_subject2.npz --env.scene.num-envs=4096
+python scripts/train.py Unitree-G1-Tracking --motion_file=src/assets/motions/g1/dance1_subject2.npz --env.scene.num-envs=4096
 ```
 
 </div>
@@ -118,12 +120,12 @@ To visualize policy behavior in MuJoCo:
 
 Velocity tracking:
 ```bash
-python scripts/play.py Mjlab-Velocity-Flat-Unitree-G1 --checkpoint_file=logs/rsl_rl/g1_velocity/2026-xx-xx_xx-xx-xx/model_xx.pt
+python scripts/play.py Unitree-G1-Flat --checkpoint_file=logs/rsl_rl/g1_velocity/2026-xx-xx_xx-xx-xx/model_xx.pt
 ```
 
 Motion imitation:
 ```bash
-python scripts/play.py Mjlab-Tracking-Flat-Unitree-G1 --motion_file=mjlab/motions/g1/dance1_subject2.npz --checkpoint_file=logs/rsl_rl/g1_tracking/2026-xx-xx_xx-xx-xx/model_xx.pt
+python scripts/play.py Unitree-G1-Tracking --motion_file=src/assets/motions/g1/dance1_subject2.npz --checkpoint_file=logs/rsl_rl/g1_tracking/2026-xx-xx_xx-xx-xx/model_xx.pt
 ```
 
 **Note**：

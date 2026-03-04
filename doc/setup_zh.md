@@ -62,19 +62,6 @@ git clone https://github.com/unitreerobotics/unitree_rl_mjlab.git
 sudo apt install -y libyaml-cpp-dev libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev
 ```
 
-#### 2.2.1 安装mujoco-warp
-
-mujoco-Warp 是MuJoCo物理模拟器的 GPU 优化版本，专为 NVIDIA 硬件设计。使用以下命令安装：
-
-```bash
-pip install "mujoco-warp@git+https://github.com/google-deepmind/mujoco_warp@9491175b7cbea87e28d3e3e67733095317c33398"
-```
-或者
-```bash
-pip install "git+ssh://git@github.com/google-deepmind/mujoco_warp@9491175b7cbea87e28d3e3e67733095317c33398"
-```
-
-#### 2.2.2 安装其他依赖
 我们将其余所需依赖放入 setup.py 文件中，
 进入 unitree_rl_mjlab 项目根目录并安装：
 
