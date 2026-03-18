@@ -2,6 +2,7 @@
 
 import logging
 import os
+import signal
 import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -20,14 +21,66 @@ from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wrappers import VideoRecorder
 
 
+# Global flag for runtime render toggle (via SIGUSR1).
+_render_active: bool = True
+
+
+def _toggle_render_signal(*_) -> None:
+  global _render_active
+  _render_active = not _render_active
+  status = "ON" if _render_active else "OFF"
+  print(f"\n[INFO] Live render {status}  (send SIGUSR1 again to toggle: kill -USR1 {os.getpid()})")
+
+
+class LiveViewer:
+  """Wrapper that displays live rgb_array frames via cv2 during training."""
+
+  def __init__(self, env, interval: int = 4):
+    self.env = env
+    self.interval = interval
+    self._step_count = 0
+    try:
+      import cv2
+      self._cv2 = cv2
+    except ImportError:
+      print("[WARNING] cv2 not found — live rendering disabled. Install with: pip install opencv-python")
+      self._cv2 = None
+
+  def __getattr__(self, name: str):
+    return getattr(self.env, name)
+
+  def step(self, actions):
+    result = self.env.step(actions)
+    self._step_count += 1
+    if self._cv2 and _render_active and self._step_count % self.interval == 0:
+      frame = self.env.render()
+      if frame is not None:
+        bgr = self._cv2.cvtColor(frame, self._cv2.COLOR_RGB2BGR)
+        self._cv2.imshow("Training", bgr)
+        self._cv2.waitKey(1)
+    return result
+
+  def reset(self, *args, **kwargs):
+    return self.env.reset(*args, **kwargs)
+
+  def close(self):
+    if self._cv2:
+      self._cv2.destroyAllWindows()
+    self.env.close()
+
+
 @dataclass(frozen=True)
 class TrainConfig:
   env: ManagerBasedRlEnvCfg
   agent: RslRlOnPolicyRunnerCfg
   motion_file: str | None = None
+  checkpoint: str | None = None
+  """Path to a .pt checkpoint file to resume from. If not set, resumes from the latest checkpoint when --agent.resume is true."""
   video: bool = False
   video_length: int = 200
   video_interval: int = 2000
+  render: bool = False
+  render_interval: int = 4
   enable_nan_guard: bool = False
   torchrunx_log_dir: str | None = None
   gpu_ids: list[int] | Literal["all"] | None = field(default_factory=lambda: [0])
@@ -90,18 +143,31 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if rank == 0:
     print(f"[INFO] Logging experiment in directory: {log_dir}")
 
+  needs_render = cfg.video or cfg.render
   env = ManagerBasedRlEnv(
-    cfg=cfg.env, device=device, render_mode="rgb_array" if cfg.video else None
+    cfg=cfg.env, device=device, render_mode="rgb_array" if needs_render else None
   )
 
   log_root_path = log_dir.parent  # Go up from specific run dir to experiment dir.
 
   resume_path: Path | None = None
-  if cfg.agent.resume:
-      # Load checkpoint from local filesystem.
-      resume_path = get_checkpoint_path(
-        log_root_path, cfg.agent.load_run, cfg.agent.load_checkpoint
-      )
+  if cfg.checkpoint is not None:
+    resume_path = Path(cfg.checkpoint).expanduser().resolve()
+    if not resume_path.exists():
+      raise FileNotFoundError(f"Checkpoint file not found: {resume_path}")
+    print(f"[INFO] Resuming from checkpoint: {resume_path}")
+  elif cfg.agent.resume:
+    print(f"[INFO] Resuming training from latest checkpoint for experiment: {cfg.agent.experiment_name}")
+    resume_path = get_checkpoint_path(
+      log_root_path, cfg.agent.load_run, cfg.agent.load_checkpoint
+    )
+    print(f"[INFO] Found checkpoint to resume from: {resume_path}")
+
+  # Set up live viewer on rank 0.
+  if cfg.render and rank == 0:
+    signal.signal(signal.SIGUSR1, _toggle_render_signal)
+    print(f"[INFO] Live rendering ON (toggle: kill -USR1 {os.getpid()})")
+    env = LiveViewer(env, interval=cfg.render_interval)
 
   # Only record videos on rank 0 to avoid multiple workers writing to the same files.
   if cfg.video and rank == 0:
@@ -130,6 +196,10 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if rank == 0:
     dump_yaml(log_dir / "params" / "env.yaml", env_cfg)
     dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg)
+
+  if resume_path is not None:
+    print(f"[INFO] Loading model checkpoint from: {resume_path}")
+    runner.load(str(resume_path))
 
   runner.learn(
     num_learning_iterations=cfg.agent.max_iterations, init_at_random_ep_len=True
@@ -188,6 +258,12 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
     ).run(run_train, task_id, args, log_dir)
 
 
+_TYRO_FLAGS = (
+  tyro.conf.AvoidSubcommands,
+  tyro.conf.UsePythonSyntaxForLiteralCollections,
+)
+
+
 def main():
   # Parse first argument to choose the task.
   # Import tasks to populate the registry.
@@ -199,7 +275,7 @@ def main():
     tyro.extras.literal_type_from_choices(all_tasks),
     add_help=False,
     return_unknown_args=True,
-    config=mjlab.TYRO_FLAGS,
+    config=_TYRO_FLAGS,
   )
 
   args = tyro.cli(
@@ -207,7 +283,7 @@ def main():
     args=remaining_args,
     default=TrainConfig.from_task(chosen_task),
     prog=sys.argv[0] + f" {chosen_task}",
-    config=mjlab.TYRO_FLAGS,
+    config=_TYRO_FLAGS,
   )
   del remaining_args
 
