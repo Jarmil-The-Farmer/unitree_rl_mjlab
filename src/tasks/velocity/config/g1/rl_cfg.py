@@ -7,6 +7,13 @@ from mjlab.rl import (
 )
 
 
+def unitree_g1_balance_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create RL runner configuration for Unitree G1 balance/teleoperation task."""
+  cfg = unitree_g1_ppo_runner_cfg()
+  cfg.experiment_name = "g1_balance_velocity"
+  return cfg
+
+
 def unitree_g1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create RL runner configuration for Unitree G1 velocity task."""
   return RslRlOnPolicyRunnerCfg(

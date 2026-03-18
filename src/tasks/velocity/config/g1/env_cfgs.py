@@ -3,12 +3,14 @@
 from src.assets.robots import (
   G1_ACTION_SCALE,
   get_g1_robot_cfg,
+  get_g1_balance_robot_cfg,
 )
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
@@ -193,5 +195,104 @@ def unitree_g1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     twist_cmd.ranges.lin_vel_x = (-0.5, 1.0)
     twist_cmd.ranges.lin_vel_y = (-0.5, 0.5)
     twist_cmd.ranges.ang_vel_z = (-0.5, 0.5)
+
+  return cfg
+
+
+def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Unitree G1 flat terrain balance configuration for teleoperation.
+
+  Based on Unitree-G1-Flat but uses the 29 DoF G1 model with Inspire Hands
+  with arms extended forward. The RL velocity policy controls only legs and
+  waist; arm joints are excluded from actions and moved with small random
+  perturbations to simulate natural teleoperation variation.
+  """
+  cfg = unitree_g1_flat_env_cfg(play=play)
+
+  # Use balance robot config (arms extended forward, 29 DoF + Inspire Hands).
+  cfg.scene.entities = {"robot": get_g1_balance_robot_cfg()}
+
+  # Leg and waist joint patterns (the only joints the RL policy controls).
+  _leg_waist_joint_names = (
+    ".*_hip_pitch_joint",
+    ".*_hip_roll_joint",
+    ".*_hip_yaw_joint",
+    ".*_knee_joint",
+    ".*_ankle_pitch_joint",
+    ".*_ankle_roll_joint",
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+  )
+
+  # Restrict RL policy action space to legs and waist only.
+  _balance_action_scale = {
+    k: v for k, v in G1_ACTION_SCALE.items()
+    if not any(arm in k for arm in ("shoulder", "elbow", "wrist"))
+  }
+  joint_pos_action = cfg.actions["joint_pos"]
+  assert isinstance(joint_pos_action, JointPositionActionCfg)
+  joint_pos_action.actuator_names = _leg_waist_joint_names
+  joint_pos_action.scale = _balance_action_scale
+
+  # Exclude arm joints from pose reward (arms are teleop-controlled, not RL).
+  # Also replace std dicts: arm patterns would cause ValueError since no arm
+  # joints are present in the filtered joint list.
+  cfg.rewards["pose"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=_leg_waist_joint_names
+  )
+  cfg.rewards["pose"].params["std_standing"] = {".*": 0.05}
+  cfg.rewards["pose"].params["std_walking"] = {
+    r".*hip_pitch.*": 0.5,
+    r".*hip_roll.*": 0.15,
+    r".*hip_yaw.*": 0.15,
+    r".*knee.*": 0.5,
+    r".*ankle_pitch.*": 0.15,
+    r".*ankle_roll.*": 0.1,
+    r".*waist_yaw.*": 0.15,
+    r".*waist_roll.*": 0.1,
+    r".*waist_pitch.*": 0.1,
+  }
+  cfg.rewards["pose"].params["std_running"] = {
+    r".*hip_pitch.*": 0.5,
+    r".*hip_roll.*": 0.25,
+    r".*hip_yaw.*": 0.25,
+    r".*knee.*": 0.5,
+    r".*ankle_pitch.*": 0.25,
+    r".*ankle_roll.*": 0.1,
+    r".*waist_yaw.*": 0.25,
+    r".*waist_roll.*": 0.1,
+    r".*waist_pitch.*": 0.1,
+  }
+
+  # At reset, only randomize leg/waist joints; arms stay at forward keyframe.
+  cfg.events["reset_robot_joints"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=_leg_waist_joint_names
+  )
+
+  # Periodically apply small random perturbations to arm joints to simulate
+  # natural teleoperation variation. Arms are held by PD controllers near the
+  # forward default position defined in BALANCE_HOME_KEYFRAME.
+  cfg.events["randomize_arms"] = EventTermCfg(
+    func=mdp.reset_joints_by_offset,
+    mode="interval",
+    interval_range_s=(1.0, 3.0),
+    params={
+      "position_range": (-0.15, 0.15),
+      "velocity_range": (0.0, 0.0),
+      "asset_cfg": SceneEntityCfg(
+        "robot",
+        joint_names=(
+          ".*_shoulder_pitch_joint",
+          ".*_shoulder_roll_joint",
+          ".*_shoulder_yaw_joint",
+          ".*_elbow_joint",
+          ".*_wrist_roll_joint",
+          ".*_wrist_pitch_joint",
+          ".*_wrist_yaw_joint",
+        ),
+      ),
+    },
+  )
 
   return cfg

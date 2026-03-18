@@ -204,6 +204,26 @@ HOME_KEYFRAME = EntityCfg.InitialStateCfg(
   joint_vel={".*": 0.0},
 )
 
+# Keyframe for balance/teleoperation tasks: arms extended forward.
+BALANCE_HOME_KEYFRAME = EntityCfg.InitialStateCfg(
+  pos=(0, 0, 0.8),
+  joint_pos={
+    # Legs (same as HOME_KEYFRAME).
+    ".*_hip_pitch_joint": -0.1,
+    ".*_knee_joint": 0.3,
+    ".*_ankle_pitch_joint": -0.2,
+    # Arms extended forward (horizontal), ready for teleoperation.
+    ".*_shoulder_pitch_joint": 1.57,
+    ".*_shoulder_roll_joint": 0.0,
+    ".*_shoulder_yaw_joint": 0.0,
+    ".*_elbow_joint": 0.0,
+    ".*_wrist_roll_joint": 0.0,
+    ".*_wrist_pitch_joint": 0.0,
+    ".*_wrist_yaw_joint": 0.0,
+  },
+  joint_vel={".*": 0.0},
+)
+
 KNEES_BENT_KEYFRAME = EntityCfg.InitialStateCfg(
   pos=(0, 0, 0.78),
   joint_pos={
@@ -278,6 +298,21 @@ def get_g1_robot_cfg() -> EntityCfg:
   """
   return EntityCfg(
     init_state=HOME_KEYFRAME,
+    collisions=(FULL_COLLISION,),
+    spec_fn=get_spec,
+    articulation=G1_ARTICULATION,
+  )
+
+
+def get_g1_balance_robot_cfg() -> EntityCfg:
+  """Get a G1 robot config with arms extended forward for teleoperation tasks.
+
+  Uses the 29 DoF G1 model with Inspire Hands. Arms start in a forward-extended
+  position suitable for teleoperation; the RL velocity policy controls only
+  legs and waist.
+  """
+  return EntityCfg(
+    init_state=BALANCE_HOME_KEYFRAME,
     collisions=(FULL_COLLISION,),
     spec_fn=get_spec,
     articulation=G1_ARTICULATION,
