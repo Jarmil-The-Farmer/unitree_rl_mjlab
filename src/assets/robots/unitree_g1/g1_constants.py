@@ -204,7 +204,8 @@ HOME_KEYFRAME = EntityCfg.InitialStateCfg(
   joint_vel={".*": 0.0},
 )
 
-# Keyframe for balance/teleoperation tasks: arms extended forward.
+# Keyframe for balance/teleoperation tasks: arms extended straight forward.
+# Shoulders pitched 90° forward, elbows straight, rest at neutral.
 BALANCE_HOME_KEYFRAME = EntityCfg.InitialStateCfg(
   pos=(0, 0, 0.8),
   joint_pos={
@@ -212,14 +213,12 @@ BALANCE_HOME_KEYFRAME = EntityCfg.InitialStateCfg(
     ".*_hip_pitch_joint": -0.1,
     ".*_knee_joint": 0.3,
     ".*_ankle_pitch_joint": -0.2,
-    # Arms extended forward (horizontal), ready for teleoperation.
+    # Arms: shoulders 90° forward, elbows straight.
+    # elbow=0 gives ~90° angle due to link geometry; ~1.57 aligns forearm with upper arm.
     ".*_shoulder_pitch_joint": 1.57,
-    ".*_shoulder_roll_joint": 0.0,
-    ".*_shoulder_yaw_joint": 0.0,
-    ".*_elbow_joint": 0.0,
-    ".*_wrist_roll_joint": 0.0,
-    ".*_wrist_pitch_joint": 0.0,
-    ".*_wrist_yaw_joint": 0.0,
+    ".*_elbow_joint": 1.57,
+    "left_shoulder_roll_joint": 0.18,
+    "right_shoulder_roll_joint": -0.18,
   },
   joint_vel={".*": 0.0},
 )

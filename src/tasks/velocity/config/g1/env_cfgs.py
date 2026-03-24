@@ -2,8 +2,9 @@
 
 from src.assets.robots import (
   G1_ACTION_SCALE,
+  G1_INSPIRE_ACTION_SCALE,
   get_g1_robot_cfg,
-  get_g1_balance_robot_cfg,
+  get_g1_inspire_balance_robot_cfg,
 )
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
@@ -13,6 +14,7 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
+from src.tasks.velocity.mdp.events import nudge_joints_velocity
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
@@ -89,8 +91,6 @@ def unitree_g1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # - Hip roll/yaw stay tighter to prevent excessive lateral sway and keep gait stable.
   # - Ankle roll is very tight for balance; ankle pitch looser for foot clearance.
   # - Waist roll/pitch stay tight to keep the torso upright and stable.
-  # - Shoulders/elbows get moderate freedom for natural arm swing during walking.
-  # - Wrists are loose (0.3) since they don't affect balance much.
   # Running values are ~1.5-2x walking values to accommodate larger motion range.
   cfg.rewards["pose"].params["std_standing"] = {".*": 0.05}
   cfg.rewards["pose"].params["std_walking"] = {
@@ -105,12 +105,6 @@ def unitree_g1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     r".*waist_yaw.*": 0.15,
     r".*waist_roll.*": 0.1,
     r".*waist_pitch.*": 0.1,
-    # Arms.
-    r".*shoulder_pitch.*": 0.15,
-    r".*shoulder_roll.*": 0.1,
-    r".*shoulder_yaw.*": 0.1,
-    r".*elbow.*": 0.1,
-    r".*wrist.*": 0.1,
   }
   cfg.rewards["pose"].params["std_running"] = {
     # Lower body.
@@ -124,12 +118,6 @@ def unitree_g1_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     r".*waist_yaw.*": 0.25,
     r".*waist_roll.*": 0.1,
     r".*waist_pitch.*": 0.1,
-    # Arms.
-    r".*shoulder_pitch.*": 0.25,
-    r".*shoulder_roll.*": 0.1,
-    r".*shoulder_yaw.*": 0.1,
-    r".*elbow.*": 0.1,
-    r".*wrist.*": 0.1,
   }
 
   cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("torso_link",)
@@ -209,31 +197,64 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """
   cfg = unitree_g1_flat_env_cfg(play=play)
 
-  # Use balance robot config (arms extended forward, 29 DoF + Inspire Hands).
-  cfg.scene.entities = {"robot": get_g1_balance_robot_cfg()}
+  # Use G1 + Inspire Hands balance config (arms extended forward, 29 DoF + 24 finger DoF).
+  cfg.scene.entities = {"robot": get_g1_inspire_balance_robot_cfg()}
 
-  # Leg and waist joint patterns (the only joints the RL policy controls).
+  # Leg and waist joint names (the only joints the RL policy controls).
+  # Must match the exact order in the robot model for consistency validation.
   _leg_waist_joint_names = (
-    ".*_hip_pitch_joint",
-    ".*_hip_roll_joint",
-    ".*_hip_yaw_joint",
-    ".*_knee_joint",
-    ".*_ankle_pitch_joint",
-    ".*_ankle_roll_joint",
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
     "waist_yaw_joint",
     "waist_roll_joint",
     "waist_pitch_joint",
   )
 
+  _leg_waist_asset_cfg = SceneEntityCfg("robot", joint_names=_leg_waist_joint_names)
+
   # Restrict RL policy action space to legs and waist only.
   _balance_action_scale = {
-    k: v for k, v in G1_ACTION_SCALE.items()
-    if not any(arm in k for arm in ("shoulder", "elbow", "wrist"))
+    k: v for k, v in G1_INSPIRE_ACTION_SCALE.items()
+    if not any(arm in k for arm in ("shoulder", "elbow", "wrist", "thumb", "index", "middle", "ring", "little"))
   }
   joint_pos_action = cfg.actions["joint_pos"]
   assert isinstance(joint_pos_action, JointPositionActionCfg)
-  joint_pos_action.actuator_names = _leg_waist_joint_names
+  joint_pos_action.actuator_names = list(_leg_waist_joint_names)
   joint_pos_action.scale = _balance_action_scale
+
+  # Filter observations to leg/waist joints only. The Inspire model has 53
+  # joints but the policy only controls 9; observing all joints adds noise
+  # that destabilises training.
+  cfg.observations["actor"].terms["joint_pos"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=_leg_waist_joint_names
+  )
+  cfg.observations["actor"].terms["joint_vel"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=_leg_waist_joint_names
+  )
+  cfg.observations["critic"].terms["joint_pos"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=_leg_waist_joint_names
+  )
+  cfg.observations["critic"].terms["joint_vel"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=_leg_waist_joint_names
+  )
+
+  # Filter joint-based rewards to leg/waist only.
+  cfg.rewards["joint_acc_l2"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=_leg_waist_joint_names
+  )
+  cfg.rewards["joint_pos_limits"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=_leg_waist_joint_names
+  )
 
   # Exclude arm joints from pose reward (arms are teleop-controlled, not RL).
   # Also replace std dicts: arm patterns would cause ValueError since no arm
@@ -270,16 +291,15 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     "robot", joint_names=_leg_waist_joint_names
   )
 
-  # Periodically apply small random perturbations to arm joints to simulate
-  # natural teleoperation variation. Arms are held by PD controllers near the
-  # forward default position defined in BALANCE_HOME_KEYFRAME.
-  cfg.events["randomize_arms"] = EventTermCfg(
-    func=mdp.reset_joints_by_offset,
+  # Periodically nudge arm joints with small random velocities. The PD
+  # controllers smoothly dampen the perturbation, producing natural gradual
+  # motion instead of instantaneous position jumps.
+  '''cfg.events["nudge_arms"] = EventTermCfg(
+    func=nudge_joints_velocity,
     mode="interval",
-    interval_range_s=(1.0, 3.0),
+    interval_range_s=(0.1, 1),
     params={
-      "position_range": (-0.15, 0.15),
-      "velocity_range": (0.0, 0.0),
+      "velocity_range": (-2, 2),
       "asset_cfg": SceneEntityCfg(
         "robot",
         joint_names=(
@@ -293,6 +313,6 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
       ),
     },
-  )
+  )'''
 
   return cfg

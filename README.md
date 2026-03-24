@@ -24,6 +24,16 @@ and sim-to-real deployment.
 
 Please refer to [setup.md](doc/setup_en.md) for installation and configuration steps.
 
+### Downloading Assets
+
+Some robot models require additional mesh assets. To download them, run:
+
+```bash
+bash fetch_assets.sh
+```
+
+This will clone the Unitree asset repository from HuggingFace and extract the required files.
+
 
 ## 🔁 Process Overview
 
@@ -58,6 +68,7 @@ python scripts/train.py Unitree-G1-Flat \
 Available velocity tracking tasks:
   - Unitree-Go2-Flat
   - Unitree-G1-Flat
+  - Unitree-G1-Flat-Balance (G1 29DoF + Inspire Hands, arms forward for teleoperation)
   - Unitree-G1-23Dof-Flat
   - Unitree-H1_2-Flat
   - Unitree-A2-Flat

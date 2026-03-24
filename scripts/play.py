@@ -37,6 +37,8 @@ class PlayConfig:
 
   # Internal flag used by demo script.
   _demo_mode: tyro.conf.Suppress[bool] = False
+  # If True, read velocity commands from a connected joystick device.
+  js: bool = False
 
 
 def run_play(task_id: str, cfg: PlayConfig):
@@ -133,6 +135,45 @@ def run_play(task_id: str, cfg: PlayConfig):
     )
 
   env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+  # If joystick control requested, start a background thread that writes
+  # joystick values into the velocity command term (overrides random sampling).
+  if cfg.js:
+    try:
+      # When running `python scripts/play.py`, the `scripts/` dir is
+      # usually on `sys.path` as the script directory, so import the
+      # local module as `joystick`. Fall back to `scripts.joystick` if
+      # that fails (e.g., running from package context).
+      try:
+        from joystick import JoystickReader
+      except Exception:
+        from scripts.joystick import JoystickReader
+      import threading, time
+
+      reader = JoystickReader()
+      cmd_term = env.unwrapped.command_manager.get_term("twist")
+
+      def _joystick_loop():
+        while True:
+          try:
+            lx, ly, rz = reader.get_values()
+          except Exception:
+            time.sleep(0.05)
+            continue
+          # Create tensor on the command device and broadcast to all envs.
+          try:
+            vals = torch.tensor([lx, ly, rz], device=cmd_term.device, dtype=cmd_term.vel_command_b.dtype)
+            cmd_term.vel_command_b[:, :] = vals.unsqueeze(0)
+            # Ensure not treated as standing/heading envs.
+            cmd_term.is_standing_env[:] = False
+            cmd_term.is_heading_env[:] = False
+          except Exception:
+            pass
+          time.sleep(0.02)
+
+      t = threading.Thread(target=_joystick_loop, daemon=True)
+      t.start()
+    except Exception as e:
+      print(f"[WARN] Joystick requested but failed to start: {e}")
   if DUMMY_MODE:
     action_shape: tuple[int, ...] = env.unwrapped.action_space.shape
     if cfg.agent == "zero":

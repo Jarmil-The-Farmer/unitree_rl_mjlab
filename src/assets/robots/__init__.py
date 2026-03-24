@@ -16,6 +16,13 @@ from .unitree_g1.g1_constants import (
   get_g1_balance_robot_cfg as get_g1_balance_robot_cfg,
 )
 
+from .unitree_g1.g1_inspire_constants import (
+  G1_INSPIRE_ACTION_SCALE as G1_INSPIRE_ACTION_SCALE,
+)
+from .unitree_g1.g1_inspire_constants import (
+  get_g1_inspire_balance_robot_cfg as get_g1_inspire_balance_robot_cfg,
+)
+
 from .unitree_g1.g1_23dof_constants import (
   G1_23DOF_ACTION_SCALE as G1_23DOF_ACTION_SCALE,
 )
