@@ -294,12 +294,12 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Periodically nudge arm joints with small random velocities. The PD
   # controllers smoothly dampen the perturbation, producing natural gradual
   # motion instead of instantaneous position jumps.
-  '''cfg.events["nudge_arms"] = EventTermCfg(
+  cfg.events["nudge_arms"] = EventTermCfg(
     func=nudge_joints_velocity,
     mode="interval",
-    interval_range_s=(0.1, 1),
+    interval_range_s=(0.2, 1),
     params={
-      "velocity_range": (-2, 2),
+      "velocity_range": (-10, 10),
       "asset_cfg": SceneEntityCfg(
         "robot",
         joint_names=(
@@ -313,6 +313,6 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
       ),
     },
-  )'''
+  )
 
   return cfg
