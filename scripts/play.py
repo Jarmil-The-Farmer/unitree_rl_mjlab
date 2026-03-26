@@ -19,6 +19,75 @@ from mjlab.utils.wrappers import VideoRecorder
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
 
 
+class _JoystickViewer(NativeMujocoViewer):
+  """NativeMujocoViewer with joystick HUD overlay and arm nudge event toggle."""
+
+  def __init__(self, env, policy, *, js_state, cmd_term, nudge_event_idx, **kwargs):
+    super().__init__(env, policy, **kwargs)
+    self._js = js_state
+    self._cmd_term = cmd_term
+    self._nudge_idx = nudge_event_idx
+    self._nudge_was_on = False
+    # Disable nudge event initially (set timer to large value).
+    if self._nudge_idx is not None:
+      em = self.env.unwrapped.event_manager
+      em._interval_term_time_left[self._nudge_idx][:] = 1e9
+
+  def step_simulation(self):
+    # Toggle nudge_arms event via event manager interval timer.
+    if self._nudge_idx is not None:
+      nudge_on = self._js["nudge_arms"]
+      if nudge_on != self._nudge_was_on:
+        self._nudge_was_on = nudge_on
+        em = self.env.unwrapped.event_manager
+        if nudge_on:
+          em._interval_term_time_left[self._nudge_idx][:] = 0.0
+        else:
+          em._interval_term_time_left[self._nudge_idx][:] = 1e9
+    super().step_simulation()
+
+  def sync_env_to_viewer(self):
+    # Intercept parent's set_texts call to append joystick state, avoiding
+    # a double set_texts (which causes flicker).
+    v = self.viewer
+    if not v or not v.is_running():
+      super().sync_env_to_viewer()
+      return
+    s = self._js
+    ct = self._cmd_term
+    robot = ct.robot
+
+    # Read velocity vectors for HUD.
+    cmd = ct.vel_command_b[self.env_idx].cpu()
+    vel = robot.data.root_link_lin_vel_b[self.env_idx].cpu()
+    ang = robot.data.root_link_ang_vel_b[self.env_idx, 2].item()
+
+    original_set_texts = v.set_texts
+
+    def _patched_set_texts(overlay):
+      font, pos, text_1, text_2 = overlay
+      text_1 += (
+        "\n \nVelocity\nHeading\nNudge"
+        "\n \nCmd Vel\nCur Vel"
+      )
+      text_2 += (
+        f"\n \n"
+        f"{'ABSOLUTE' if s['absolute_velocity'] else 'RELATIVE'}\n"
+        f"{'ON' if s['heading_align'] else 'OFF'}\n"
+        f"{'ON' if s['nudge_arms'] else 'OFF'}"
+        f"\n \n"
+        f"({cmd[0]:.2f}, {cmd[1]:.2f}, {cmd[2]:.2f})\n"
+        f"({vel[0]:.2f}, {vel[1]:.2f}, {ang:.2f})"
+      )
+      original_set_texts((font, pos, text_1, text_2))
+
+    v.set_texts = _patched_set_texts
+    try:
+      super().sync_env_to_viewer()
+    finally:
+      v.set_texts = original_set_texts
+
+
 @dataclass(frozen=True)
 class PlayConfig:
   agent: Literal["zero", "random", "trained"] = "trained"
@@ -137,6 +206,7 @@ def run_play(task_id: str, cfg: PlayConfig):
   env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
   # If joystick control requested, start a background thread that writes
   # joystick values into the velocity command term (overrides random sampling).
+  _js_viewer_kwargs = None  # Set below if joystick initializes successfully.
   if cfg.js:
     try:
       # When running `python scripts/play.py`, the `scripts/` dir is
@@ -147,10 +217,46 @@ def run_play(task_id: str, cfg: PlayConfig):
         from joystick import JoystickReader
       except Exception:
         from scripts.joystick import JoystickReader
-      import threading, time
+      import math, threading, time
 
       reader = JoystickReader()
       cmd_term = env.unwrapped.command_manager.get_term("twist")
+      robot = cmd_term.robot
+
+      # P-gain for heading alignment (ang_vel_z = gain * heading_error).
+      HEADING_ALIGN_GAIN = 2.0
+
+      # PS4 buttons: 0=Cross(X), 1=Circle, 2=Square, 3=Triangle
+      BTN_HEADING_ALIGN = 0   # Cross (X)
+      BTN_ABS_VELOCITY = 1    # Circle
+      BTN_NUDGE_ARMS = 2      # Square
+
+      # Shared joystick state (read by _JoystickViewer for HUD + nudge).
+      js_state = {
+        "absolute_velocity": True,
+        "heading_align": False,
+        "nudge_arms": False,
+      }
+
+      # Find nudge_arms event index in the event manager's interval terms.
+      nudge_event_idx = None
+      try:
+        em = env.unwrapped.event_manager
+        interval_names = em.active_terms.get("interval", [])
+        if "nudge_arms" in interval_names:
+          nudge_event_idx = interval_names.index("nudge_arms")
+          print(f"[Joystick] nudge_arms event found (index {nudge_event_idx})")
+        else:
+          print("[Joystick] nudge_arms event not registered in config")
+      except Exception as e:
+        print(f"[Joystick] Could not find nudge_arms event: {e}")
+
+      print("[Joystick] Controls:")
+      print("  Left stick     : move (lin_vel_x / lin_vel_y)")
+      print("  Right stick X  : rotate (ang_vel_z)")
+      print("  Circle         : toggle absolute/relative velocity")
+      print("  Cross (X)      : toggle heading alignment (absolute mode only)")
+      print("  Square         : toggle arm nudge")
 
       def _joystick_loop():
         while True:
@@ -159,11 +265,42 @@ def run_play(task_id: str, cfg: PlayConfig):
           except Exception:
             time.sleep(0.05)
             continue
-          # Create tensor on the command device and broadcast to all envs.
+
+          # Check button toggles.
+          for btn, key, label in [
+            (BTN_ABS_VELOCITY, "absolute_velocity", "Absolute velocity"),
+            (BTN_HEADING_ALIGN, "heading_align", "Heading alignment"),
+            (BTN_NUDGE_ARMS, "nudge_arms", "Arm nudge"),
+          ]:
+            new = reader.get_button_toggle(btn)
+            if new != js_state[key]:
+              js_state[key] = new
+              print(f"[Joystick] {label}: {'ON' if new else 'OFF'}")
+
           try:
-            vals = torch.tensor([lx, ly, rz], device=cmd_term.device, dtype=cmd_term.vel_command_b.dtype)
-            cmd_term.vel_command_b[:, :] = vals.unsqueeze(0)
-            # Ensure not treated as standing/heading envs.
+            if js_state["absolute_velocity"]:
+              # Rotate world-frame joystick input into robot body frame.
+              yaw = robot.data.heading_w  # (num_envs,)
+              cos_yaw = torch.cos(yaw)
+              sin_yaw = torch.sin(yaw)
+              cmd_term.vel_command_b[:, 0] = cos_yaw * lx + sin_yaw * ly
+              cmd_term.vel_command_b[:, 1] = -sin_yaw * lx + cos_yaw * ly
+
+              # Heading alignment: auto-rotate to face velocity direction.
+              if js_state["heading_align"] and (abs(lx) > 0 or abs(ly) > 0):
+                desired_yaw = math.atan2(ly, lx)
+                heading_error = desired_yaw - yaw
+                heading_error = (heading_error + math.pi) % (2 * math.pi) - math.pi
+                cmd_term.vel_command_b[:, 2] = torch.clamp(
+                  HEADING_ALIGN_GAIN * heading_error, -1.0, 1.0
+                )
+              else:
+                cmd_term.vel_command_b[:, 2] = rz
+            else:
+              cmd_term.vel_command_b[:, 0] = lx
+              cmd_term.vel_command_b[:, 1] = ly
+              cmd_term.vel_command_b[:, 2] = rz
+
             cmd_term.is_standing_env[:] = False
             cmd_term.is_heading_env[:] = False
           except Exception:
@@ -172,6 +309,9 @@ def run_play(task_id: str, cfg: PlayConfig):
 
       t = threading.Thread(target=_joystick_loop, daemon=True)
       t.start()
+      _js_viewer_kwargs = dict(
+        js_state=js_state, cmd_term=cmd_term, nudge_event_idx=nudge_event_idx,
+      )
     except Exception as e:
       print(f"[WARN] Joystick requested but failed to start: {e}")
   if DUMMY_MODE:
@@ -209,7 +349,11 @@ def run_play(task_id: str, cfg: PlayConfig):
     resolved_viewer = cfg.viewer
 
   if resolved_viewer == "native":
-    NativeMujocoViewer(env, policy).run()
+    if _js_viewer_kwargs is not None:
+      viewer = _JoystickViewer(env, policy, **_js_viewer_kwargs)
+    else:
+      viewer = NativeMujocoViewer(env, policy)
+    viewer.run()
   elif resolved_viewer == "viser":
     ViserPlayViewer(env, policy).run()
   else:
