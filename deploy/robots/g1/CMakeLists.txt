@@ -27,10 +27,12 @@ file(GLOB CNPY_SRC ${PROJECT_SOURCE_DIR}/../../thirdparty/cnpy/*.cpp)
 
 add_library(cnpy_lib STATIC ${CNPY_SRC})
 
+link_directories(/usr/local/lib)
+
 link_libraries(
   unitree_sdk2
-  ddsc
-  ddscxx
+  /usr/local/lib/libddsc.so
+  /usr/local/lib/libddscxx.so
   rt
   pthread
   Boost::program_options
