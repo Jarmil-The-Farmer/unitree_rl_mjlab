@@ -9,7 +9,8 @@ from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.tasks.tracking.mdp import MotionCommandCfg
-from mjlab.tasks.tracking.tracking_env_cfg import make_tracking_env_cfg
+
+from src.tasks.tracking.tracking_env_cfg import make_tracking_env_cfg
 
 
 def unitree_g1_flat_tracking_env_cfg(
@@ -25,9 +26,10 @@ def unitree_g1_flat_tracking_env_cfg(
     name="self_collision",
     primary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
     secondary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
-    fields=("found",),
+    fields=("found", "force"),
     reduce="none",
     num_slots=1,
+    history_length=4,
   )
   cfg.scene.sensors = (self_collision_cfg,)
 

@@ -12,7 +12,7 @@ from typing import Literal, cast
 import tyro
 
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
-from mjlab.rl import MjlabOnPolicyRunner, RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
+from mjlab.rl import MjlabOnPolicyRunner, RslRlBaseRunnerCfg, RslRlVecEnvWrapper
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.tasks.tracking.mdp import MotionCommandCfg
 from mjlab.utils.gpu import select_gpus
@@ -72,7 +72,7 @@ class LiveViewer:
 @dataclass(frozen=True)
 class TrainConfig:
   env: ManagerBasedRlEnvCfg
-  agent: RslRlOnPolicyRunnerCfg
+  agent: RslRlBaseRunnerCfg
   motion_file: str | None = None
   checkpoint: str | None = None
   """Path to a .pt checkpoint file to resume from. If not set, resumes from the latest checkpoint when --agent.resume is true."""
@@ -89,7 +89,6 @@ class TrainConfig:
   def from_task(task_id: str) -> "TrainConfig":
     env_cfg = load_env_cfg(task_id)
     agent_cfg = load_rl_cfg(task_id)
-    assert isinstance(agent_cfg, RslRlOnPolicyRunnerCfg)
     return TrainConfig(env=env_cfg, agent=agent_cfg)
 
 
@@ -191,6 +190,11 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
 
   runner_kwargs = {}
   runner = runner_cls(env, agent_cfg, str(log_dir), device, **runner_kwargs)
+
+  runner.add_git_repo_to_log(__file__)
+  if resume_path is not None:
+    print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+    runner.load(str(resume_path))
 
   # Only write config files from rank 0 to avoid race conditions.
   if rank == 0:
