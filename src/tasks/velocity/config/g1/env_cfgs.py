@@ -317,4 +317,10 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
 
+  # Increase standing training ratio for better balance without velocity input.
+  # Default 0.05 (5%) is too low — the robot barely learns to stand still.
+  twist_cmd = cfg.commands["twist"]
+  assert isinstance(twist_cmd, UniformVelocityCommandCfg)
+  twist_cmd.rel_standing_envs = 0.15
+
   return cfg

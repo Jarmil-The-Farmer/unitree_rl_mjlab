@@ -1,5 +1,6 @@
 """Script to play RL agent with RSL-RL."""
 
+import math
 import os
 import sys
 from dataclasses import asdict, dataclass
@@ -19,7 +20,106 @@ from mjlab.utils.wrappers import VideoRecorder
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
 
 
-class _JoystickViewer(NativeMujocoViewer):
+def _parse_obs_terms_from_yaml(yaml_path: Path, group_name: str) -> list[str] | None:
+  """Parse observation term names from a saved env.yaml file."""
+  try:
+    with open(yaml_path) as f:
+      lines = f.readlines()
+  except OSError:
+    return None
+  in_obs = False
+  in_group = False
+  in_terms = False
+  terms: list[str] = []
+  for line in lines:
+    s = line.rstrip()
+    if s == "observations:":
+      in_obs = True
+      continue
+    if in_obs and s == f"  {group_name}:":
+      in_group = True
+      continue
+    if in_group and s == "    terms:":
+      in_terms = True
+      continue
+    if in_terms:
+      if s and not s.startswith("      "):
+        break
+      if s.startswith("      ") and not s.startswith("        "):
+        name = s.strip().rstrip(":")
+        if name and not name.startswith("#"):
+          terms.append(name)
+  return terms or None
+
+
+def _reconcile_obs_with_checkpoint(env_cfg, checkpoint_path: Path):
+  """Adjust env_cfg observations to match a checkpoint's saved config.
+
+  Looks for params/env.yaml next to the checkpoint. If found, removes
+  observation terms that weren't present during training so the model's
+  expected input dimensions match.
+  """
+  env_yaml = checkpoint_path.parent / "params" / "env.yaml"
+  if not env_yaml.exists():
+    return
+  saved_actor_terms = _parse_obs_terms_from_yaml(env_yaml, "actor")
+  if saved_actor_terms is None:
+    return
+  current_actor_terms = list(env_cfg.observations["actor"].terms.keys())
+  if saved_actor_terms == current_actor_terms:
+    return
+  # Remove terms not in saved config.
+  removed = []
+  for name in list(env_cfg.observations["actor"].terms.keys()):
+    if name not in saved_actor_terms:
+      del env_cfg.observations["actor"].terms[name]
+      removed.append(name)
+  for name in removed:
+    if "critic" in env_cfg.observations:
+      env_cfg.observations["critic"].terms.pop(name, None)
+  if removed:
+    print(f"[INFO] Adjusted config to match checkpoint: removed {removed}")
+  missing = [n for n in saved_actor_terms if n not in current_actor_terms]
+  if missing:
+    print(f"[WARN] Checkpoint expects terms not in current config: {missing}")
+
+
+def _log_terminations(env):
+  """Print termination reasons to console when any environment resets."""
+  unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
+  tm = unwrapped.termination_manager
+  if not tm.dones.any():
+    return
+  reasons = []
+  for name in tm.active_terms:
+    mask = tm.get_term(name)
+    if mask.any():
+      ids = mask.nonzero(as_tuple=False).squeeze(-1).tolist()
+      if isinstance(ids, int):
+        ids = [ids]
+      reasons.append(f"  {name}: env(s) {ids}")
+  if reasons:
+    # Also print orientation angle for debugging fell_over.
+    robot = unwrapped.scene["robot"]
+    pg = robot.data.projected_gravity_b
+    tilt_deg = torch.acos(-pg[:, 2]).abs() * (180.0 / math.pi)
+    tilt_str = ", ".join(f"{t:.1f}°" for t in tilt_deg.cpu().tolist())
+    print(f"[RESET] Termination triggered (tilt: {tilt_str}):")
+    for r in reasons:
+      print(r)
+
+
+class _TermLoggingViewer(NativeMujocoViewer):
+  """NativeMujocoViewer that prints termination reasons to console."""
+
+  def _execute_step(self) -> bool:
+    result = super()._execute_step()
+    if result:
+      _log_terminations(self.env)
+    return result
+
+
+class _JoystickViewer(_TermLoggingViewer):
   """NativeMujocoViewer with joystick HUD overlay and arm nudge event toggle."""
 
   def __init__(self, env, policy, *, js_state, cmd_term, nudge_event_idx, **kwargs):
@@ -33,7 +133,7 @@ class _JoystickViewer(NativeMujocoViewer):
       em = self.env.unwrapped.event_manager
       em._interval_term_time_left[self._nudge_idx][:] = 1e9
 
-  def step_simulation(self):
+  def _execute_step(self) -> bool:
     # Toggle nudge_arms event via event manager interval timer.
     if self._nudge_idx is not None:
       nudge_on = self._js["nudge_arms"]
@@ -44,7 +144,7 @@ class _JoystickViewer(NativeMujocoViewer):
           em._interval_term_time_left[self._nudge_idx][:] = 0.0
         else:
           em._interval_term_time_left[self._nudge_idx][:] = 1e9
-    super().step_simulation()
+    return super()._execute_step()
 
   def sync_env_to_viewer(self):
     # Intercept parent's set_texts call to append joystick state, avoiding
@@ -177,6 +277,10 @@ def run_play(task_id: str, cfg: PlayConfig):
         f"[INFO]: Loading checkpoint: {checkpoint_name} (run: {run_id}, {cached_str})"
       )
     log_dir = resume_path.parent
+
+  # Reconcile observations with checkpoint's saved config.
+  if resume_path is not None:
+    _reconcile_obs_with_checkpoint(env_cfg, resume_path)
 
   if cfg.num_envs is not None:
     env_cfg.scene.num_envs = cfg.num_envs
@@ -352,7 +456,7 @@ def run_play(task_id: str, cfg: PlayConfig):
     if _js_viewer_kwargs is not None:
       viewer = _JoystickViewer(env, policy, **_js_viewer_kwargs)
     else:
-      viewer = NativeMujocoViewer(env, policy)
+      viewer = _TermLoggingViewer(env, policy)
     viewer.run()
   elif resolved_viewer == "viser":
     ViserPlayViewer(env, policy).run()
