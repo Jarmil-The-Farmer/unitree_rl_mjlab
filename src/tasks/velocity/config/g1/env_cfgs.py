@@ -296,7 +296,7 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Periodically nudge arm joints with small random velocities. The PD
   # controllers smoothly dampen the perturbation, producing natural gradual
   # motion instead of instantaneous position jumps.
-  cfg.events["nudge_arms"] = EventTermCfg(
+  """ cfg.events["nudge_arms"] = EventTermCfg(
     func=nudge_joints_velocity,
     mode="interval",
     interval_range_s=(0.2, 1),
@@ -315,7 +315,7 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
       ),
     },
-  )
+  ) """
 
   # Increase standing training ratio for better balance without velocity input.
   # Default 0.05 (5%) is too low — the robot barely learns to stand still.
