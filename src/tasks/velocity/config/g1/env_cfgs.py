@@ -257,6 +257,9 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["joint_pos_limits"].params["asset_cfg"] = SceneEntityCfg(
     "robot", joint_names=_leg_waist_joint_names
   )
+  cfg.rewards["stand_still"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=_leg_waist_joint_names
+  )
 
   # Exclude arm joints from pose reward (arms are teleop-controlled, not RL).
   # Also replace std dicts: arm patterns would cause ValueError since no arm
@@ -317,10 +320,18 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   ) """
 
+  # Stronger balance incentives for the heavy Inspire hands configuration.
+  # The forward-extended arms shift COM significantly, requiring more active
+  # balance effort than the base G1.
+  cfg.rewards["body_orientation_l2"].weight = -3.0
+  cfg.rewards["stand_still"].weight = -3.0
+  cfg.rewards["body_ang_vel"].weight = -0.15
+
   # Increase standing training ratio for better balance without velocity input.
   # Default 0.05 (5%) is too low — the robot barely learns to stand still.
+  # With heavy Inspire hands, 40% gives enough gradient signal for balance.
   twist_cmd = cfg.commands["twist"]
   assert isinstance(twist_cmd, UniformVelocityCommandCfg)
-  twist_cmd.rel_standing_envs = 0.15
+  twist_cmd.rel_standing_envs = 0.4
 
   return cfg
