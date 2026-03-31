@@ -407,6 +407,26 @@ class variable_posture:
     return torch.exp(-torch.mean(error_squared / (std**2), dim=1))
 
 
+def track_base_height(
+  env: ManagerBasedRlEnv,
+  std: float,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward for tracking the commanded base height.
+
+  Uses the root link z-position relative to the terrain (env origin z) as the
+  actual height. Returns exp(-error² / std²).
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  target_height = command[:, 3]  # 4th channel = height
+  actual_height = asset.data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2]
+  height_error = torch.square(target_height - actual_height)
+  return torch.exp(-height_error / std**2)
+
+
 def stand_still(
         env: ManagerBasedRlEnv,
         command_name: str,

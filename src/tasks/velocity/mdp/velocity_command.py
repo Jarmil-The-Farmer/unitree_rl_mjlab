@@ -280,3 +280,171 @@ class UniformVelocityCommandCfg(CommandTermCfg):
         "The velocity command has heading commands active (heading_command=True) but "
         "the `ranges.heading` parameter is set to None."
       )
+
+
+class UniformVelocityHeightCommand(UniformVelocityCommand):
+  """Velocity command extended with a target base height channel.
+
+  The command tensor is 4D: [lin_vel_x, lin_vel_y, ang_vel_z, target_height].
+  Standing environments zero only the velocity channels; the height target
+  is always active.
+  """
+
+  cfg: UniformVelocityHeightCommandCfg
+
+  def __init__(self, cfg: UniformVelocityHeightCommandCfg, env: ManagerBasedRlEnv):
+    super().__init__(cfg, env)
+    # Expand command buffer from 3 to 4 channels.
+    self.vel_command_b = torch.zeros(self.num_envs, 4, device=self.device)
+
+  @property
+  def command(self) -> torch.Tensor:
+    return self.vel_command_b
+
+  def _resample_command(self, env_ids: torch.Tensor) -> None:
+    r = torch.empty(len(env_ids), device=self.device)
+    self.vel_command_b[env_ids, 0] = r.uniform_(*self.cfg.ranges.lin_vel_x)
+    self.vel_command_b[env_ids, 1] = r.uniform_(*self.cfg.ranges.lin_vel_y)
+    self.vel_command_b[env_ids, 2] = r.uniform_(*self.cfg.ranges.ang_vel_z)
+    self.vel_command_b[env_ids, :3] *= (
+      torch.norm(self.vel_command_b[env_ids, :3], dim=1) > 0.1
+    ).unsqueeze(1)
+    # Sample target height.
+    self.vel_command_b[env_ids, 3] = r.uniform_(*self.cfg.ranges.base_height)
+    if self.cfg.heading_command:
+      assert self.cfg.ranges.heading is not None
+      self.heading_target[env_ids] = r.uniform_(*self.cfg.ranges.heading)
+      self.is_heading_env[env_ids] = r.uniform_(0.0, 1.0) <= self.cfg.rel_heading_envs
+    self.is_standing_env[env_ids] = r.uniform_(0.0, 1.0) <= self.cfg.rel_standing_envs
+
+    init_vel_mask = r.uniform_(0.0, 1.0) < self.cfg.init_velocity_prob
+    init_vel_env_ids = env_ids[init_vel_mask]
+    if len(init_vel_env_ids) > 0:
+      root_pos = self.robot.data.root_link_pos_w[init_vel_env_ids]
+      root_quat = self.robot.data.root_link_quat_w[init_vel_env_ids]
+      lin_vel_b = self.robot.data.root_link_lin_vel_b[init_vel_env_ids]
+      lin_vel_b[:, :2] = self.vel_command_b[init_vel_env_ids, :2]
+      root_lin_vel_w = quat_apply(root_quat, lin_vel_b)
+      root_ang_vel_b = self.robot.data.root_link_ang_vel_b[init_vel_env_ids]
+      root_ang_vel_b[:, 2] = self.vel_command_b[init_vel_env_ids, 2]
+      root_state = torch.cat(
+        [root_pos, root_quat, root_lin_vel_w, root_ang_vel_b], dim=-1
+      )
+      self.robot.write_root_state_to_sim(root_state, init_vel_env_ids)
+
+  def _update_command(self) -> None:
+    if self.cfg.heading_command:
+      self.heading_error = wrap_to_pi(self.heading_target - self.robot.data.heading_w)
+      env_ids = self.is_heading_env.nonzero(as_tuple=False).flatten()
+      self.vel_command_b[env_ids, 2] = torch.clip(
+        self.cfg.heading_control_stiffness * self.heading_error[env_ids],
+        min=self.cfg.ranges.ang_vel_z[0],
+        max=self.cfg.ranges.ang_vel_z[1],
+      )
+    standing_env_ids = self.is_standing_env.nonzero(as_tuple=False).flatten()
+    # Zero only velocity channels; height target stays active.
+    self.vel_command_b[standing_env_ids, :3] = 0.0
+
+  def _update_metrics(self) -> None:
+    max_command_time = self.cfg.resampling_time_range[1]
+    max_command_step = max_command_time / self._env.step_dt
+    self.metrics["error_vel_xy"] += (
+      torch.norm(
+        self.vel_command_b[:, :2] - self.robot.data.root_link_lin_vel_b[:, :2], dim=-1
+      )
+      / max_command_step
+    )
+    self.metrics["error_vel_yaw"] += (
+      torch.abs(self.vel_command_b[:, 2] - self.robot.data.root_link_ang_vel_b[:, 2])
+      / max_command_step
+    )
+
+  def create_gui(
+    self,
+    name: str,
+    server: "viser.ViserServer",
+    get_env_idx: Callable[[], int],
+  ) -> None:
+    """Create velocity + height joystick sliders in the Viser viewer."""
+    from viser import Icon
+
+    ranges = self.cfg.ranges
+
+    axes = [
+      ("lin_vel_x", ranges.lin_vel_x[1]),
+      ("lin_vel_y", ranges.lin_vel_y[1]),
+      ("ang_vel_z", ranges.ang_vel_z[1]),
+      ("base_height", ranges.base_height[1]),
+    ]
+    sliders: list = []
+
+    with server.gui.add_folder(name.capitalize()):
+      enabled = server.gui.add_checkbox("Enable", initial_value=False)
+
+      for label, max_val in axes:
+        if label == "base_height":
+          # Height slider uses the full range, not symmetric.
+          slider = server.gui.add_slider(
+            label,
+            min=ranges.base_height[0],
+            max=ranges.base_height[1],
+            step=0.01,
+            initial_value=self.cfg.default_height,
+          )
+        else:
+          max_input = server.gui.add_slider(
+            f"Max {label}",
+            initial_value=max_val,
+            step=0.1,
+            min=0.1,
+            max=10.0,
+          )
+          slider = server.gui.add_slider(
+            label,
+            min=-max_val,
+            max=max_val,
+            step=0.05,
+            initial_value=0.0,
+          )
+
+          @max_input.on_update
+          def _(_ev, _s=slider, _m=max_input) -> None:
+            _s.min = -_m.value
+            _s.max = _m.value
+
+        sliders.append(slider)
+
+      zero_btn = server.gui.add_button("Zero", icon=Icon.SQUARE_X)
+
+      @zero_btn.on_click
+      def _(_) -> None:
+        for i, s in enumerate(sliders):
+          s.value = self.cfg.default_height if i == 3 else 0.0
+
+    self._joystick_enabled = enabled
+    self._joystick_sliders = sliders
+    self._joystick_get_env_idx = get_env_idx
+
+  def compute(self, dt: float) -> None:
+    super().compute(dt)
+    if self._joystick_enabled is not None and self._joystick_enabled.value:
+      assert self._joystick_get_env_idx is not None
+      idx = self._joystick_get_env_idx()
+      for i, s in enumerate(self._joystick_sliders):
+        self.vel_command_b[idx, i] = s.value
+
+
+@dataclass(kw_only=True)
+class UniformVelocityHeightCommandCfg(UniformVelocityCommandCfg):
+  """Velocity command config with an additional base height channel."""
+
+  default_height: float = 0.74
+
+  @dataclass
+  class Ranges(UniformVelocityCommandCfg.Ranges):
+    base_height: tuple[float, float] = (0.45, 0.78)
+
+  ranges: Ranges
+
+  def build(self, env: ManagerBasedRlEnv) -> UniformVelocityHeightCommand:
+    return UniformVelocityHeightCommand(self, env)

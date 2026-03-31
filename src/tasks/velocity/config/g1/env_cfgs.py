@@ -16,6 +16,8 @@ from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
 from src.tasks.velocity.mdp.events import nudge_joints_velocity
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
+from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
+from src.tasks.velocity.mdp.rewards import track_base_height
 from src.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
 
@@ -333,5 +335,64 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   twist_cmd = cfg.commands["twist"]
   assert isinstance(twist_cmd, UniformVelocityCommandCfg)
   twist_cmd.rel_standing_envs = 0.4
+
+  return cfg
+
+
+def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Unitree G1 flat terrain balance configuration with height control.
+
+  Based on Unitree-G1-Flat-Balance but adds a target base height command.
+  The robot learns to squat/crouch by tracking a randomly sampled target
+  height in addition to velocity commands. The command vector is 4D:
+  [lin_vel_x, lin_vel_y, ang_vel_z, target_height].
+  """
+  import math
+
+  cfg = unitree_g1_flat_balance_env_cfg(play=play)
+
+  # Replace the velocity command with the height-aware variant.
+  # Preserve the existing velocity ranges and settings.
+  old_twist = cfg.commands["twist"]
+  assert isinstance(old_twist, UniformVelocityCommandCfg)
+  cfg.commands["twist"] = UniformVelocityHeightCommandCfg(
+    entity_name=old_twist.entity_name,
+    resampling_time_range=old_twist.resampling_time_range,
+    rel_standing_envs=old_twist.rel_standing_envs,
+    rel_heading_envs=old_twist.rel_heading_envs,
+    heading_command=old_twist.heading_command,
+    heading_control_stiffness=old_twist.heading_control_stiffness,
+    debug_vis=old_twist.debug_vis,
+    default_height=0.74,
+    ranges=UniformVelocityHeightCommandCfg.Ranges(
+      lin_vel_x=old_twist.ranges.lin_vel_x,
+      lin_vel_y=old_twist.ranges.lin_vel_y,
+      ang_vel_z=old_twist.ranges.ang_vel_z,
+      heading=old_twist.ranges.heading,
+      base_height=(0.45, 0.78),
+    ),
+    viz=UniformVelocityCommandCfg.VizCfg(z_offset=1.15),
+  )
+
+  # Add height tracking reward.
+  cfg.rewards["track_base_height"] = RewardTermCfg(
+    func=track_base_height,
+    weight=1.5,
+    params={"command_name": "twist", "std": math.sqrt(0.1)},
+  )
+
+  # Relax the pose reward — squatting requires large knee/hip deviations
+  # from the default standing pose.
+  cfg.rewards["pose"].params["std_standing"] = {
+    r".*hip_pitch.*": 0.5,
+    r".*hip_roll.*": 0.15,
+    r".*hip_yaw.*": 0.15,
+    r".*knee.*": 0.5,
+    r".*ankle_pitch.*": 0.5,
+    r".*ankle_roll.*": 0.1,
+    r".*waist_yaw.*": 0.15,
+    r".*waist_roll.*": 0.1,
+    r".*waist_pitch.*": 0.1,
+  }
 
   return cfg
