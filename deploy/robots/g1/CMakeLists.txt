@@ -3,6 +3,8 @@ project(g1_controller)
 
 set(CMAKE_CXX_STANDARD 17)
 
+option(WITH_LCM_ARMS "Enable LCM arm receiver (requires liblcm-dev)" OFF)
+
 find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(yaml-cpp REQUIRED)
 find_package(ZLIB REQUIRED)
@@ -42,6 +44,13 @@ link_libraries(
   cnpy_lib
   ZLIB::ZLIB
 )
+
+if(WITH_LCM_ARMS)
+  find_library(LCM_LIBRARY lcm REQUIRED)
+  message(STATUS "LCM arm receiver enabled, linking: ${LCM_LIBRARY}")
+  add_definitions(-DWITH_LCM_ARMS)
+  link_libraries(${LCM_LIBRARY})
+endif()
 
 file(GLOB_RECURSE ADD_SRC_LIST
   ${PROJECT_SOURCE_DIR}/src/*.cpp

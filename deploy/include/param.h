@@ -43,6 +43,7 @@ inline std::filesystem::path bin_path;
 inline std::filesystem::path proj_dir;
 inline std::filesystem::path config_dir;
 inline YAML::Node config;
+inline bool receive_arms = false;
 
 inline std::filesystem::path get_bin_path() {
     std::vector<char> path(1024);
@@ -130,6 +131,7 @@ inline po::variables_map helper(int argc, char** argv)
         ("version,v", "show version")
         ("log", "record log file")
         ("network,n", po::value<std::string>()->default_value(""), "dds network interface")
+        ("receive-arms", "receive arm joint targets via LCM (channel: arm_action)")
         ;
 
     po::variables_map vm;
@@ -157,6 +159,8 @@ inline po::variables_map helper(int argc, char** argv)
         std::filesystem::create_directories(proj_dir / "log");
         spdlog::create_logger(proj_dir.string() + "/log/log.txt");
     }
+
+    receive_arms = vm.count("receive-arms") > 0;
 
     return vm;
 }
