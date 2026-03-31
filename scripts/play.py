@@ -122,12 +122,13 @@ class _TermLoggingViewer(NativeMujocoViewer):
 class _JoystickViewer(_TermLoggingViewer):
   """NativeMujocoViewer with joystick HUD overlay and arm nudge event toggle."""
 
-  def __init__(self, env, policy, *, js_state, cmd_term, nudge_event_idx, **kwargs):
+  def __init__(self, env, policy, *, js_state, cmd_term, nudge_event_idx, has_height=False, **kwargs):
     super().__init__(env, policy, **kwargs)
     self._js = js_state
     self._cmd_term = cmd_term
     self._nudge_idx = nudge_event_idx
     self._nudge_was_on = False
+    self._has_height = has_height
     # Disable nudge event initially (set timer to large value).
     if self._nudge_idx is not None:
       em = self.env.unwrapped.event_manager
@@ -164,6 +165,13 @@ class _JoystickViewer(_TermLoggingViewer):
 
     original_set_texts = v.set_texts
 
+    # Actual base height for HUD.
+    if self._has_height:
+      actual_height = (
+        robot.data.root_link_pos_w[self.env_idx, 2].item()
+        - self.env.unwrapped.scene.env_origins[self.env_idx, 2].item()
+      )
+
     def _patched_set_texts(overlay):
       font, pos, text_1, text_2 = overlay
       text_1 += (
@@ -179,6 +187,9 @@ class _JoystickViewer(_TermLoggingViewer):
         f"({cmd[0]:.2f}, {cmd[1]:.2f}, {cmd[2]:.2f})\n"
         f"({vel[0]:.2f}, {vel[1]:.2f}, {ang:.2f})"
       )
+      if self._has_height:
+        text_1 += "\n \nCmd Height\nCur Height"
+        text_2 += f"\n \n{cmd[3]:.2f}m\n{actual_height:.2f}m"
       original_set_texts((font, pos, text_1, text_2))
 
     v.set_texts = _patched_set_texts
@@ -355,9 +366,19 @@ def run_play(task_id: str, cfg: PlayConfig):
       except Exception as e:
         print(f"[Joystick] Could not find nudge_arms event: {e}")
 
+      # Detect height-aware command (4D command vector).
+      from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
+      has_height = isinstance(cmd_term.cfg, UniformVelocityHeightCommandCfg)
+      if has_height:
+        height_min, height_max = cmd_term.cfg.ranges.base_height
+        height_mid = (height_min + height_max) / 2.0
+        height_half = (height_max - height_min) / 2.0
+
       print("[Joystick] Controls:")
       print("  Left stick     : move (lin_vel_x / lin_vel_y)")
       print("  Right stick X  : rotate (ang_vel_z)")
+      if has_height:
+        print(f"  Right stick Y  : height ({height_min:.2f}–{height_max:.2f}m)")
       print("  Circle         : toggle absolute/relative velocity")
       print("  Cross (X)      : toggle heading alignment (absolute mode only)")
       print("  Square         : toggle arm nudge")
@@ -365,7 +386,7 @@ def run_play(task_id: str, cfg: PlayConfig):
       def _joystick_loop():
         while True:
           try:
-            lx, ly, rz = reader.get_values()
+            lx, ly, rz, ry = reader.get_values()
           except Exception:
             time.sleep(0.05)
             continue
@@ -405,6 +426,10 @@ def run_play(task_id: str, cfg: PlayConfig):
               cmd_term.vel_command_b[:, 1] = ly
               cmd_term.vel_command_b[:, 2] = rz
 
+            # Map right stick Y to target height for height-aware tasks.
+            if has_height:
+              cmd_term.vel_command_b[:, 3] = height_mid + ry * height_half
+
             cmd_term.is_standing_env[:] = False
             cmd_term.is_heading_env[:] = False
           except Exception:
@@ -415,6 +440,7 @@ def run_play(task_id: str, cfg: PlayConfig):
       t.start()
       _js_viewer_kwargs = dict(
         js_state=js_state, cmd_term=cmd_term, nudge_event_idx=nudge_event_idx,
+        has_height=has_height,
       )
     except Exception as e:
       print(f"[WARN] Joystick requested but failed to start: {e}")
