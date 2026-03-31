@@ -17,7 +17,7 @@ from mjlab.tasks.velocity import mdp
 from src.tasks.velocity.mdp.events import nudge_joints_velocity
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
-from src.tasks.velocity.mdp.rewards import track_base_height
+from src.tasks.velocity.mdp.rewards import track_base_height, track_linear_velocity_no_z
 from src.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
 
@@ -374,21 +374,38 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     viz=UniformVelocityCommandCfg.VizCfg(z_offset=1.15),
   )
 
-  # Add height tracking reward.
-  cfg.rewards["track_base_height"] = RewardTermCfg(
-    func=track_base_height,
-    weight=1.5,
-    params={"command_name": "twist", "std": math.sqrt(0.1)},
+  # 1) Replace track_linear_velocity with a version that doesn't penalize
+  #    z-velocity. The original penalizes vertical motion (2 * z_error²),
+  #    which directly conflicts with height changes during squatting.
+  cfg.rewards["track_linear_velocity"] = RewardTermCfg(
+    func=track_linear_velocity_no_z,
+    weight=1.0,
+    params={"command_name": "twist", "std": math.sqrt(0.25)},
   )
 
-  # Relax the pose reward — squatting requires large knee/hip deviations
-  # from the default standing pose.
+  # 2) Add height tracking reward — main signal for learning to squat.
+  cfg.rewards["track_base_height"] = RewardTermCfg(
+    func=track_base_height,
+    weight=2.0,
+    params={"command_name": "twist", "std": math.sqrt(0.05)},
+  )
+
+  # 3) Reduce stand_still penalty. At weight -3.0 it dominates when velocity
+  #    is zero, punishing the knee/hip bending needed for squatting.
+  cfg.rewards["stand_still"].weight = -0.5
+
+  # 4) Reduce pose reward weight — squatting deviates heavily from default
+  #    standing pose; a strong pose reward fights the height command.
+  cfg.rewards["pose"].weight = 0.3
+
+  # Relax pose std for standing — squatting requires large knee/hip/ankle
+  # deviations from the default standing pose.
   cfg.rewards["pose"].params["std_standing"] = {
-    r".*hip_pitch.*": 0.5,
+    r".*hip_pitch.*": 1.0,
     r".*hip_roll.*": 0.15,
     r".*hip_yaw.*": 0.15,
-    r".*knee.*": 0.5,
-    r".*ankle_pitch.*": 0.5,
+    r".*knee.*": 1.0,
+    r".*ankle_pitch.*": 1.0,
     r".*ankle_roll.*": 0.1,
     r".*waist_yaw.*": 0.15,
     r".*waist_roll.*": 0.1,

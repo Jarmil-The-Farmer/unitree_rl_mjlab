@@ -427,6 +427,25 @@ def track_base_height(
   return torch.exp(-height_error / std**2)
 
 
+def track_linear_velocity_no_z(
+  env: ManagerBasedRlEnv,
+  std: float,
+  command_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward for tracking commanded linear velocity without z-velocity penalty.
+
+  Like track_linear_velocity but omits the z-velocity penalty, which would
+  conflict with height tracking (changing height requires z-velocity).
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None, f"Command '{command_name}' not found."
+  actual = asset.data.root_link_lin_vel_b
+  xy_error = torch.sum(torch.square(command[:, :2] - actual[:, :2]), dim=1)
+  return torch.exp(-xy_error / std**2)
+
+
 def stand_still(
         env: ManagerBasedRlEnv,
         command_name: str,
