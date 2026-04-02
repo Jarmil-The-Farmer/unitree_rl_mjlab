@@ -390,9 +390,12 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     params={"command_name": "twist", "std": math.sqrt(0.05)},
   )
 
-  # 3) Reduce stand_still penalty. At weight -3.0 it dominates when velocity
-  #    is zero, punishing the knee/hip bending needed for squatting.
+  # 3) Reduce stand_still penalty and make it height-aware. At weight -3.0
+  #    it dominates when velocity is zero, punishing the knee/hip bending
+  #    needed for squatting. With default_height set, stand_still deactivates
+  #    when a non-default height is commanded, allowing squatting in place.
   cfg.rewards["stand_still"].weight = -0.5
+  cfg.rewards["stand_still"].params["default_height"] = 0.74
 
   # 4) Reduce pose reward weight — squatting deviates heavily from default
   #    standing pose; a strong pose reward fights the height command.

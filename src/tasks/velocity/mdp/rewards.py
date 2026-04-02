@@ -450,6 +450,8 @@ def stand_still(
         env: ManagerBasedRlEnv,
         command_name: str,
         command_threshold: float = 0.1,
+        default_height: float | None = None,
+        height_threshold: float = 0.02,
         asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
     asset: Entity = env.scene[asset_cfg.name]
@@ -461,7 +463,12 @@ def stand_still(
             linear_norm = torch.norm(command[:, :2], dim=1)
             angular_norm = torch.abs(command[:, 2])
             total_command = linear_norm + angular_norm
-            scale = (total_command <= command_threshold).float()
-            reward *= scale
+            is_standing = total_command <= command_threshold
+            # If height channel exists and a non-default height is commanded,
+            # don't penalize joint movement (squatting requires it).
+            if default_height is not None and command.shape[1] > 3:
+                height_deviation = torch.abs(command[:, 3] - default_height)
+                is_standing = is_standing & (height_deviation <= height_threshold)
+            reward *= is_standing.float()
     return reward
 
