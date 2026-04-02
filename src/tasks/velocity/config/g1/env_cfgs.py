@@ -14,7 +14,7 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
-from src.tasks.velocity.mdp.events import nudge_joints_velocity
+from src.tasks.velocity.mdp.events import nudge_joints_velocity, set_joint_targets_to_default
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
 from src.tasks.velocity.mdp.rewards import track_base_height, track_linear_velocity_no_z
@@ -293,9 +293,52 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     r".*waist_pitch.*": 0.1,
   }
 
-  # At reset, only randomize leg/waist joints; arms stay at forward keyframe.
+  # At reset, only randomize leg/waist joints; arms are reset separately.
   cfg.events["reset_robot_joints"].params["asset_cfg"] = SceneEntityCfg(
     "robot", joint_names=_leg_waist_joint_names
+  )
+
+  # Reset arm joints to keyframe positions on every reset. sim.reset() zeros
+  # ALL qpos, and reset_robot_joints only restores leg/waist — without this,
+  # arms start at URDF default (0) instead of the keyframe pose.
+  cfg.events["reset_arm_joints"] = EventTermCfg(
+    func=mdp.reset_joints_by_offset,
+    mode="reset",
+    params={
+      "position_range": (0.0, 0.0),
+      "velocity_range": (0.0, 0.0),
+      "asset_cfg": SceneEntityCfg(
+        "robot",
+        joint_names=(
+          ".*_shoulder_pitch_joint",
+          ".*_shoulder_roll_joint",
+          ".*_shoulder_yaw_joint",
+          ".*_elbow_joint",
+          ".*_wrist_roll_joint",
+          ".*_wrist_pitch_joint",
+          ".*_wrist_yaw_joint",
+        ),
+      ),
+    },
+  )
+
+  # Set arm actuator targets to keyframe values so PD controllers hold
+  # the desired arm pose instead of driving to 0 (clear_state default).
+  _arm_joint_names = (
+    ".*_shoulder_pitch_joint",
+    ".*_shoulder_roll_joint",
+    ".*_shoulder_yaw_joint",
+    ".*_elbow_joint",
+    ".*_wrist_roll_joint",
+    ".*_wrist_pitch_joint",
+    ".*_wrist_yaw_joint",
+  )
+  cfg.events["reset_arm_targets"] = EventTermCfg(
+    func=set_joint_targets_to_default,
+    mode="reset",
+    params={
+      "asset_cfg": SceneEntityCfg("robot", joint_names=_arm_joint_names),
+    },
   )
 
   # Periodically nudge arm joints with small random velocities. The PD

@@ -263,15 +263,16 @@ INSPIRE_FEET_ONLY_COLLISION = CollisionCfg(
 INSPIRE_BALANCE_HOME_KEYFRAME = EntityCfg.InitialStateCfg(
   pos=(0, 0, 0.8),
   joint_pos={
-    # Legs: slight backward lean to compensate for heavy forward-extended arms.
-    ".*_hip_pitch_joint": -0.15,
-    ".*_knee_joint": 0.3,
-    ".*_ankle_pitch_joint": -0.15,
-    # Arms: shoulders 90 deg forward, elbows straight.
-    ".*_shoulder_pitch_joint": 1.57,
+    # Legs: slight backward lean to compensate for forward-extended arms.
+    #".*_hip_pitch_joint": -0.15,
+    #".*_knee_joint": 0.3,
+    #".*_ankle_pitch_joint": -0.15,
+    # Arms: straing from body forward
+    ".*_shoulder_pitch_joint": -1.4,
+    # elbows straight (1.57 = 180 degrees)
     ".*_elbow_joint": 1.57,
-    "left_shoulder_roll_joint": 0.18,
-    "right_shoulder_roll_joint": -0.18,
+    #"left_shoulder_roll_joint": 0.18,
+    #"right_shoulder_roll_joint": -0.18,
   },
   joint_vel={".*": 0.0},
 )

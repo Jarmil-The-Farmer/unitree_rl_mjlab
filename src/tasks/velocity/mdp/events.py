@@ -45,3 +45,22 @@ def nudge_joints_velocity(
     env_ids=env_ids,
     joint_ids=joint_ids,
   )
+
+
+def set_joint_targets_to_default(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+  """Set actuator position targets for specified joints to their default (keyframe) values.
+
+  This prevents PD controllers from driving joints back to 0 after reset,
+  which is critical for joints not controlled by the RL policy (e.g. arms).
+  """
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+
+  asset: Entity = env.scene[asset_cfg.name]
+  asset.data.joint_pos_target[env_ids[:, None], asset_cfg.joint_ids] = (
+    asset.data.default_joint_pos[env_ids[:, None], asset_cfg.joint_ids]
+  )
