@@ -219,6 +219,8 @@ class PlayConfig:
   _demo_mode: tyro.conf.Suppress[bool] = False
   # If True, read velocity commands from a connected joystick device.
   js: bool = False
+  # If True, open a virtual GUI joystick (no physical gamepad needed).
+  vjs: bool = False
 
 
 def run_play(task_id: str, cfg: PlayConfig):
@@ -322,19 +324,27 @@ def run_play(task_id: str, cfg: PlayConfig):
   # If joystick control requested, start a background thread that writes
   # joystick values into the velocity command term (overrides random sampling).
   _js_viewer_kwargs = None  # Set below if joystick initializes successfully.
-  if cfg.js:
+  if cfg.js or cfg.vjs:
     try:
-      # When running `python scripts/play.py`, the `scripts/` dir is
-      # usually on `sys.path` as the script directory, so import the
-      # local module as `joystick`. Fall back to `scripts.joystick` if
-      # that fails (e.g., running from package context).
-      try:
-        from joystick import JoystickReader
-      except Exception:
-        from scripts.joystick import JoystickReader
       import math, threading, time
 
-      reader = JoystickReader()
+      if cfg.vjs:
+        # Virtual GUI joystick (no physical gamepad needed).
+        try:
+          from virtual_joystick import VirtualJoystickReader
+        except Exception:
+          from scripts.virtual_joystick import VirtualJoystickReader
+        reader = VirtualJoystickReader()
+      else:
+        # When running `python scripts/play.py`, the `scripts/` dir is
+        # usually on `sys.path` as the script directory, so import the
+        # local module as `joystick`. Fall back to `scripts.joystick` if
+        # that fails (e.g., running from package context).
+        try:
+          from joystick import JoystickReader
+        except Exception:
+          from scripts.joystick import JoystickReader
+        reader = JoystickReader()
       cmd_term = env.unwrapped.command_manager.get_term("twist")
       robot = cmd_term.robot
 
