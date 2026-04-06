@@ -92,6 +92,39 @@ def commands_vel(
   }
 
 
+class StandingBalanceStage(TypedDict):
+  step: int
+  rel_standing_envs: float | None
+  nudge_velocity_range: tuple[float, float] | None
+
+
+def standing_balance(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  command_name: str,
+  nudge_event_name: str,
+  stages: list[StandingBalanceStage],
+) -> dict[str, torch.Tensor]:
+  """Gradually increase standing ratio and arm nudge intensity.
+
+  Early training focuses on walking; later stages shift towards standing
+  balance with arm perturbations so the robot learns to stay still while
+  arms are being moved.
+  """
+  del env_ids  # Unused.
+  command_term = env.command_manager.get_term(command_name)
+  assert command_term is not None
+  cfg = cast(UniformVelocityCommandCfg, command_term.cfg)
+  nudge_cfg = env.event_manager.get_term_cfg(nudge_event_name)
+  for stage in stages:
+    if env.common_step_counter > stage["step"]:
+      if stage.get("rel_standing_envs") is not None:
+        cfg.rel_standing_envs = stage["rel_standing_envs"]
+      if stage.get("nudge_velocity_range") is not None:
+        nudge_cfg.params["velocity_range"] = stage["nudge_velocity_range"]
+  return {}
+
+
 def reward_weight(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,

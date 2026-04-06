@@ -11,9 +11,11 @@ from mjlab.envs import mdp as envs_mdp
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
+from src.tasks.velocity.mdp.curriculums import standing_balance
 from src.tasks.velocity.mdp.events import nudge_joints_velocity, set_joint_targets_to_default
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
@@ -236,20 +238,36 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   joint_pos_action.actuator_names = list(_leg_waist_joint_names)
   joint_pos_action.scale = _balance_action_scale
 
-  # Filter observations to leg/waist joints only. The Inspire model has 53
-  # joints but the policy only controls 9; observing all joints adds noise
-  # that destabilises training.
+  # Observe leg/waist + arm joints (no fingers — they don't affect balance).
+  # The policy controls only legs/waist but needs arm positions to compensate
+  # for their weight (8.5 kg, 24% of total mass) during balance.
+  _obs_joint_names = _leg_waist_joint_names + (
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+  )
   cfg.observations["actor"].terms["joint_pos"].params["asset_cfg"] = SceneEntityCfg(
-    "robot", joint_names=_leg_waist_joint_names
+    "robot", joint_names=_obs_joint_names
   )
   cfg.observations["actor"].terms["joint_vel"].params["asset_cfg"] = SceneEntityCfg(
-    "robot", joint_names=_leg_waist_joint_names
+    "robot", joint_names=_obs_joint_names
   )
   cfg.observations["critic"].terms["joint_pos"].params["asset_cfg"] = SceneEntityCfg(
-    "robot", joint_names=_leg_waist_joint_names
+    "robot", joint_names=_obs_joint_names
   )
   cfg.observations["critic"].terms["joint_vel"].params["asset_cfg"] = SceneEntityCfg(
-    "robot", joint_names=_leg_waist_joint_names
+    "robot", joint_names=_obs_joint_names
   )
 
   # Filter joint-based rewards to leg/waist only.
@@ -344,12 +362,13 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Periodically nudge arm joints with small random velocities. The PD
   # controllers smoothly dampen the perturbation, producing natural gradual
   # motion instead of instantaneous position jumps.
+  # Starts gentle — curriculum ramps up intensity later.
   cfg.events["nudge_arms"] = EventTermCfg(
     func=nudge_joints_velocity,
     mode="interval",
     interval_range_s=(0.2, 1),
     params={
-      "velocity_range": (-5, 5),
+      "velocity_range": (-1, 1),
       "asset_cfg": SceneEntityCfg(
         "robot",
         joint_names=(
@@ -372,12 +391,30 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["stand_still"].weight = -3.0
   cfg.rewards["body_ang_vel"].weight = -0.15
 
-  # Increase standing training ratio for better balance without velocity input.
-  # Default 0.05 (5%) is too low — the robot barely learns to stand still.
-  # With heavy Inspire hands, 40% gives enough gradient signal for balance.
+  # Start with low standing ratio; curriculum ramps it up once the robot
+  # can walk reliably. Final stage: 60% standing with strong arm nudges
+  # to learn in-place balance under arm perturbations.
   twist_cmd = cfg.commands["twist"]
   assert isinstance(twist_cmd, UniformVelocityCommandCfg)
-  twist_cmd.rel_standing_envs = 0.4
+  twist_cmd.rel_standing_envs = 0.1
+
+  # Curriculum: gradually shift focus from walking to standing balance.
+  #  1) First learn to walk with gentle arm nudges.
+  #  2) Increase standing ratio and arm perturbation intensity.
+  #  3) Final phase: mostly standing with strong arm movement.
+  cfg.curriculum["standing_balance"] = CurriculumTermCfg(
+    func=standing_balance,
+    params={
+      "command_name": "twist",
+      "nudge_event_name": "nudge_arms",
+      "stages": [
+        {"step": 0,          "rel_standing_envs": 0.1, "nudge_velocity_range": (-1, 1)},
+        {"step": 3000 * 24,  "rel_standing_envs": 0.3, "nudge_velocity_range": (-3, 3)},
+        {"step": 6000 * 24,  "rel_standing_envs": 0.5, "nudge_velocity_range": (-5, 5)},
+        {"step": 9000 * 24,  "rel_standing_envs": 0.6, "nudge_velocity_range": (-7, 7)},
+      ],
+    },
+  )
 
   return cfg
 
