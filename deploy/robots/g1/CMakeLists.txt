@@ -3,7 +3,7 @@ project(g1_controller)
 
 set(CMAKE_CXX_STANDARD 17)
 
-option(WITH_LCM_ARMS "Enable LCM arm receiver (requires liblcm-dev)" OFF)
+option(WITH_LCM_ARMS "Enable LCM arm receiver (requires liblcm-dev)" ON)
 
 find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(yaml-cpp REQUIRED)
