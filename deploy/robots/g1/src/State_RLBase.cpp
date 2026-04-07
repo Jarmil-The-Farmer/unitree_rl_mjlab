@@ -132,7 +132,10 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
 void State_RLBase::run()
 {
     auto action = env->action_manager->processed_actions();
-    for(int i(0); i < env->robot->data.joint_ids_map.size(); i++) {
+    // action.size() may be smaller than joint_ids_map.size() when the policy
+    // only controls a subset of joints (e.g. legs/waist but not arms).
+    auto num_action_joints = std::min(action.size(), env->robot->data.joint_ids_map.size());
+    for(size_t i(0); i < num_action_joints; i++) {
         lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]].q() = action[i];
     }
 
