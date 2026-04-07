@@ -268,7 +268,7 @@ INSPIRE_BALANCE_HOME_KEYFRAME = EntityCfg.InitialStateCfg(
     #".*_knee_joint": 0.3,
     #".*_ankle_pitch_joint": -0.15,
     # Arms: straing from body forward
-    ".*_shoulder_pitch_joint": -1.4,
+    ".*_shoulder_pitch_joint": -1.6,
     # elbows straight (1.57 = 180 degrees)
     ".*_elbow_joint": 1.57,
     #"left_shoulder_roll_joint": 0.18,
