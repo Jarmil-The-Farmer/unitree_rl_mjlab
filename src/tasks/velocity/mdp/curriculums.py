@@ -125,6 +125,59 @@ def standing_balance(
   return {}
 
 
+class ArmRangeStage(TypedDict):
+  step: int
+  shoulder_pitch_range: tuple[float, float]
+  elbow_range: tuple[float, float]
+
+
+def arm_pose_randomization_curriculum(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  reset_event_name: str,
+  stages: list[ArmRangeStage],
+) -> dict[str, torch.Tensor]:
+  """Gradually widen the arm pose randomization range.
+
+  Updates the shoulder_pitch_range and elbow_range parameters of the
+  randomize_arm_pose reset event. Early training uses a narrow range
+  near (0, 0), later stages cover the full arm workspace.
+
+  Between stages the ranges are linearly interpolated so the transition
+  is smooth rather than a sudden jump.
+  """
+  del env_ids  # Unused.
+  step = env.common_step_counter
+
+  # Find the two surrounding stages and interpolate.
+  prev = stages[0]
+  sp_range = prev["shoulder_pitch_range"]
+  el_range = prev["elbow_range"]
+  for stage in stages:
+    if step >= stage["step"]:
+      prev = stage
+      sp_range = prev["shoulder_pitch_range"]
+      el_range = prev["elbow_range"]
+    else:
+      t = (step - prev["step"]) / max(stage["step"] - prev["step"], 1)
+      sp_range = (
+        prev["shoulder_pitch_range"][0] + t * (stage["shoulder_pitch_range"][0] - prev["shoulder_pitch_range"][0]),
+        prev["shoulder_pitch_range"][1] + t * (stage["shoulder_pitch_range"][1] - prev["shoulder_pitch_range"][1]),
+      )
+      el_range = (
+        prev["elbow_range"][0] + t * (stage["elbow_range"][0] - prev["elbow_range"][0]),
+        prev["elbow_range"][1] + t * (stage["elbow_range"][1] - prev["elbow_range"][1]),
+      )
+      break
+
+  # Update the reset event's params so next reset samples from the new range.
+  event_cfg = env.event_manager.get_term_cfg(reset_event_name)
+  event_cfg.params["shoulder_pitch_range"] = sp_range
+  event_cfg.params["elbow_range"] = el_range
+
+  return {}
+
+
 def reward_weight(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor,

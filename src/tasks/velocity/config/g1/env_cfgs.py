@@ -15,8 +15,8 @@ from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
-from src.tasks.velocity.mdp.curriculums import standing_balance
-from src.tasks.velocity.mdp.events import nudge_joints_velocity, set_joint_targets_to_default
+from src.tasks.velocity.mdp.curriculums import arm_pose_randomization_curriculum, standing_balance
+from src.tasks.velocity.mdp.events import nudge_joints_velocity, randomize_arm_pose
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
 from src.tasks.velocity.mdp.rewards import track_base_height, track_linear_velocity_no_z
@@ -316,32 +316,10 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     "robot", joint_names=_leg_waist_joint_names
   )
 
-  # Reset arm joints to keyframe positions on every reset. sim.reset() zeros
-  # ALL qpos, and reset_robot_joints only restores leg/waist — without this,
-  # arms start at URDF default (0) instead of the keyframe pose.
-  cfg.events["reset_arm_joints"] = EventTermCfg(
-    func=mdp.reset_joints_by_offset,
-    mode="reset",
-    params={
-      "position_range": (0.0, 0.0),
-      "velocity_range": (0.0, 0.0),
-      "asset_cfg": SceneEntityCfg(
-        "robot",
-        joint_names=(
-          ".*_shoulder_pitch_joint",
-          ".*_shoulder_roll_joint",
-          ".*_shoulder_yaw_joint",
-          ".*_elbow_joint",
-          ".*_wrist_roll_joint",
-          ".*_wrist_pitch_joint",
-          ".*_wrist_yaw_joint",
-        ),
-      ),
-    },
-  )
-
-  # Set arm actuator targets to keyframe values so PD controllers hold
-  # the desired arm pose instead of driving to 0 (clear_state default).
+  # Randomize arm pose on every reset. Each env gets a random shoulder_pitch
+  # and elbow from the current range (widened by curriculum). PD targets are
+  # set to hold the sampled pose. default_joint_pos stays at (0,0) so
+  # joint_pos_rel observations reflect absolute arm position.
   _arm_joint_names = (
     ".*_shoulder_pitch_joint",
     ".*_shoulder_roll_joint",
@@ -351,10 +329,12 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     ".*_wrist_pitch_joint",
     ".*_wrist_yaw_joint",
   )
-  cfg.events["reset_arm_targets"] = EventTermCfg(
-    func=set_joint_targets_to_default,
+  cfg.events["randomize_arm_pose"] = EventTermCfg(
+    func=randomize_arm_pose,
     mode="reset",
     params={
+      "shoulder_pitch_range": (-0.3, 0.0),
+      "elbow_range": (0.0, 0.3),
       "asset_cfg": SceneEntityCfg("robot", joint_names=_arm_joint_names),
     },
   )
@@ -412,6 +392,22 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         {"step": 3000 * 24,  "rel_standing_envs": 0.3, "nudge_velocity_range": (-3, 3)},
         {"step": 6000 * 24,  "rel_standing_envs": 0.5, "nudge_velocity_range": (-5, 5)},
         {"step": 9000 * 24,  "rel_standing_envs": 0.6, "nudge_velocity_range": (-7, 7)},
+      ],
+    },
+  )
+
+  # Curriculum: gradually widen arm pose randomization range.
+  # Early training: narrow range near (0,0) so robot learns to walk first.
+  # Later: full range so robot sees all arm configurations every episode.
+  cfg.curriculum["arm_pose_range"] = CurriculumTermCfg(
+    func=arm_pose_randomization_curriculum,
+    params={
+      "reset_event_name": "randomize_arm_pose",
+      "stages": [
+        {"step": 0,          "shoulder_pitch_range": (-0.3, 0.0), "elbow_range": (0.0, 0.3)},
+        {"step": 2000 * 24,  "shoulder_pitch_range": (-0.8, 0.0), "elbow_range": (0.0, 0.8)},
+        {"step": 4000 * 24,  "shoulder_pitch_range": (-1.2, 0.0), "elbow_range": (0.0, 1.2)},
+        {"step": 6000 * 24,  "shoulder_pitch_range": (-1.6, 0.0), "elbow_range": (0.0, 1.57)},
       ],
     },
   )

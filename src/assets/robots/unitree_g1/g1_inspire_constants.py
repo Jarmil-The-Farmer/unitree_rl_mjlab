@@ -71,19 +71,20 @@ _COLLISION_GEOMS: list[tuple[str, str, str, list[float], list[float]]] = [
   ("torso_link", "torso_collision", "capsule",
    [0.09], [0.01, 0, 0.08, 0.01, 0, 0.2]),
   ("torso_link", "head_collision", "sphere", [0.06], [0, 0, 0.43]),
-  # Arms.
-  ("left_shoulder_yaw_link", "left_shoulder_yaw_collision", "capsule",
-   [0.035], [0, 0, -0.08, 0, 0, 0.05]),
-  ("right_shoulder_yaw_link", "right_shoulder_yaw_collision", "capsule",
-   [0.035], [0, 0, -0.08, 0, 0, 0.05]),
-  ("left_elbow_link", "left_elbow_yaw_collision", "capsule",
-   [0.035], [-0.01, 0, -0.01, 0.08, 0, -0.01]),
-  ("right_elbow_link", "right_elbow_yaw_collision", "capsule",
-   [0.035], [-0.01, 0, -0.01, 0.08, 0, -0.01]),
-  ("left_wrist_pitch_link", "left_wrist_collision", "capsule",
-   [0.035], [-0.01, 0, 0, 0.06, 0, 0]),
-  ("right_wrist_pitch_link", "right_wrist_collision", "capsule",
-   [0.035], [-0.01, 0, 0, 0.06, 0, 0]),
+  # Arms: collision disabled — arms are teleop-controlled and would cause
+  # the RL leg policy to lean/twist to avoid self-collision with legs.
+  # ("left_shoulder_yaw_link", "left_shoulder_yaw_collision", "capsule",
+  #  [0.035], [0, 0, -0.08, 0, 0, 0.05]),
+  # ("right_shoulder_yaw_link", "right_shoulder_yaw_collision", "capsule",
+  #  [0.035], [0, 0, -0.08, 0, 0, 0.05]),
+  # ("left_elbow_link", "left_elbow_yaw_collision", "capsule",
+  #  [0.035], [-0.01, 0, -0.01, 0.08, 0, -0.01]),
+  # ("right_elbow_link", "right_elbow_yaw_collision", "capsule",
+  #  [0.035], [-0.01, 0, -0.01, 0.08, 0, -0.01]),
+  # ("left_wrist_pitch_link", "left_wrist_collision", "capsule",
+  #  [0.035], [-0.01, 0, 0, 0.06, 0, 0]),
+  # ("right_wrist_pitch_link", "right_wrist_collision", "capsule",
+  #  [0.035], [-0.01, 0, 0, 0.06, 0, 0]),
 ]
 
 # Foot collision capsules (7 per foot, size=0.01).
@@ -263,16 +264,10 @@ INSPIRE_FEET_ONLY_COLLISION = CollisionCfg(
 INSPIRE_BALANCE_HOME_KEYFRAME = EntityCfg.InitialStateCfg(
   pos=(0, 0, 0.8),
   joint_pos={
-    # Legs: slight backward lean to compensate for forward-extended arms.
-    #".*_hip_pitch_joint": -0.15,
-    #".*_knee_joint": 0.3,
-    #".*_ankle_pitch_joint": -0.15,
-    # Arms: straing from body forward
-    ".*_shoulder_pitch_joint": -1.6,
-    # elbows straight (1.57 = 180 degrees)
-    ".*_elbow_joint": 1.57,
-    #"left_shoulder_roll_joint": 0.18,
-    #"right_shoulder_roll_joint": -0.18,
+    # Arms start at sides (0, 0). The arm_pose_curriculum gradually moves
+    # default_joint_pos towards the extended pose (-1.6, 1.57) during training.
+    ".*_shoulder_pitch_joint": 0.0,
+    ".*_elbow_joint": 0.0,
   },
   joint_vel={".*": 0.0},
 )
