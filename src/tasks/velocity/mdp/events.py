@@ -28,13 +28,15 @@ def nudge_joints_velocity(
   perturbation and produce natural, gradual motion.
   """
   if env_ids is None:
-    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.int)
+    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+  if len(env_ids) == 0:
+    return
 
   asset: Entity = env.scene[asset_cfg.name]
 
   joint_ids = asset_cfg.joint_ids
   if isinstance(joint_ids, list):
-    joint_ids = torch.tensor(joint_ids, device=env.device)
+    joint_ids = torch.tensor(joint_ids, device=env.device, dtype=torch.long)
 
   joint_vel = torch.empty(
     (len(env_ids), len(asset_cfg.joint_ids)), device=env.device
