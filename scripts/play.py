@@ -52,13 +52,36 @@ def _parse_obs_terms_from_yaml(yaml_path: Path, group_name: str) -> list[str] | 
   return terms or None
 
 
+def _parse_obs_joint_names(yaml_path: Path, group_name: str, term_name: str) -> list[str] | None:
+  """Parse joint_names from an observation term in a saved env.yaml file."""
+  import re
+  try:
+    with open(yaml_path) as f:
+      content = f.read()
+  except OSError:
+    return None
+  # Find the term's joint_names list.
+  pattern = (
+    rf'  {group_name}:\s+terms:\s+(?:.*?\n)*?\s+{term_name}:'
+    rf'.*?joint_names: !!python/tuple\n((?:\s+- [\w]+\n)+)'
+  )
+  match = re.search(pattern, content, re.DOTALL)
+  if not match:
+    return None
+  names = [line.strip().lstrip('- ') for line in match.group(1).strip().split('\n')]
+  return names if names else None
+
+
 def _reconcile_obs_with_checkpoint(env_cfg, checkpoint_path: Path):
   """Adjust env_cfg observations to match a checkpoint's saved config.
 
   Looks for params/env.yaml next to the checkpoint. If found, removes
-  observation terms that weren't present during training so the model's
-  expected input dimensions match.
+  observation terms that weren't present during training and adjusts
+  joint_names in joint_pos/joint_vel observations to match the checkpoint's
+  dimensions.
   """
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+
   env_yaml = checkpoint_path.parent / "params" / "env.yaml"
   if not env_yaml.exists():
     return
@@ -67,7 +90,8 @@ def _reconcile_obs_with_checkpoint(env_cfg, checkpoint_path: Path):
     return
   current_actor_terms = list(env_cfg.observations["actor"].terms.keys())
   if saved_actor_terms == current_actor_terms:
-    return
+    # Terms match, but joint dimensions may differ. Check joint_names.
+    pass
   # Remove terms not in saved config.
   removed = []
   for name in list(env_cfg.observations["actor"].terms.keys()):
@@ -82,6 +106,27 @@ def _reconcile_obs_with_checkpoint(env_cfg, checkpoint_path: Path):
   missing = [n for n in saved_actor_terms if n not in current_actor_terms]
   if missing:
     print(f"[WARN] Checkpoint expects terms not in current config: {missing}")
+
+  # Reconcile joint_names for joint_pos and joint_vel observations.
+  for term_name in ("joint_pos", "joint_vel"):
+    saved_names = _parse_obs_joint_names(env_yaml, "actor", term_name)
+    if saved_names is None:
+      continue
+    for group_key in ("actor", "critic"):
+      group = env_cfg.observations.get(group_key)
+      if group is None or term_name not in group.terms:
+        continue
+      term_cfg = group.terms[term_name]
+      current_cfg = term_cfg.params.get("asset_cfg")
+      if current_cfg is None:
+        continue
+      current_names = getattr(current_cfg, "joint_names", None)
+      if current_names is not None and list(current_names) != saved_names:
+        term_cfg.params["asset_cfg"] = SceneEntityCfg(
+          current_cfg.name, joint_names=tuple(saved_names)
+        )
+        print(f"[INFO] Adjusted {group_key}/{term_name} joint_names: "
+              f"{len(list(current_names))} -> {len(saved_names)} joints")
 
 
 def _log_terminations(env):
@@ -119,6 +164,13 @@ class _TermLoggingViewer(NativeMujocoViewer):
     return result
 
 
+_ARM_MODES = [
+  {"name": "Default (0, 0)",       "shoulder_pitch": 0.0,  "elbow": 0.0},
+  {"name": "At sides (0, 1.57)",   "shoulder_pitch": 0.0,  "elbow": 1.57},
+  {"name": "Extended (-1.6, 1.57)","shoulder_pitch": -1.6, "elbow": 1.57},
+]
+
+
 class _JoystickViewer(_TermLoggingViewer):
   """NativeMujocoViewer with joystick HUD overlay and arm nudge event toggle."""
 
@@ -129,10 +181,33 @@ class _JoystickViewer(_TermLoggingViewer):
     self._nudge_idx = nudge_event_idx
     self._nudge_was_on = False
     self._has_height = has_height
+    self._arm_mode_idx = 0
+    self._prev_arm_mode_idx = 0
+    # Resolve arm joint indices once.
+    robot = cmd_term.robot
+    self._arm_shoulder_ids = [
+      i for i, n in enumerate(robot.joint_names) if "shoulder_pitch" in n
+    ]
+    self._arm_elbow_ids = [
+      i for i, n in enumerate(robot.joint_names) if "elbow" in n and "wrist" not in n
+    ]
     # Disable nudge event initially (set timer to large value).
     if self._nudge_idx is not None:
       em = self.env.unwrapped.event_manager
       em._interval_term_time_left[self._nudge_idx][:] = 1e9
+
+  def _apply_arm_mode(self):
+    """Write arm qpos + PD targets for the active arm mode."""
+    mode = _ARM_MODES[self._arm_mode_idx]
+    robot = self._cmd_term.robot
+    sp = mode["shoulder_pitch"]
+    el = mode["elbow"]
+    for idx in self._arm_shoulder_ids:
+      robot.data.default_joint_pos[:, idx] = sp
+      robot.data.joint_pos_target[:, idx] = sp
+    for idx in self._arm_elbow_ids:
+      robot.data.default_joint_pos[:, idx] = el
+      robot.data.joint_pos_target[:, idx] = el
 
   def _execute_step(self) -> bool:
     # Toggle nudge_arms event via event manager interval timer.
@@ -145,6 +220,14 @@ class _JoystickViewer(_TermLoggingViewer):
           em._interval_term_time_left[self._nudge_idx][:] = 0.0
         else:
           em._interval_term_time_left[self._nudge_idx][:] = 1e9
+    # Cycle arm mode on button press.
+    self._arm_mode_idx = self._js.get("arm_mode", 0)
+    if self._arm_mode_idx != self._prev_arm_mode_idx:
+      self._prev_arm_mode_idx = self._arm_mode_idx
+      self._apply_arm_mode()
+    # Re-apply arm mode every step so it persists after reset
+    # (reset_arm_targets would overwrite with keyframe defaults).
+    self._apply_arm_mode()
     return super()._execute_step()
 
   def sync_env_to_viewer(self):
@@ -174,15 +257,17 @@ class _JoystickViewer(_TermLoggingViewer):
 
     def _patched_set_texts(overlay):
       font, pos, text_1, text_2 = overlay
+      arm_mode_name = _ARM_MODES[s.get("arm_mode", 0)]["name"]
       text_1 += (
-        "\n \nVelocity\nHeading\nNudge"
+        "\n \n[O] Velocity\n[X] Heading\n[S] Nudge\n[T] Arms"
         "\n \nCmd Vel\nCur Vel"
       )
       text_2 += (
         f"\n \n"
         f"{'ABSOLUTE' if s['absolute_velocity'] else 'RELATIVE'}\n"
         f"{'ON' if s['heading_align'] else 'OFF'}\n"
-        f"{'ON' if s['nudge_arms'] else 'OFF'}"
+        f"{'ON' if s['nudge_arms'] else 'OFF'}\n"
+        f"{arm_mode_name}"
         f"\n \n"
         f"({cmd[0]:.2f}, {cmd[1]:.2f}, {cmd[2]:.2f})\n"
         f"({vel[0]:.2f}, {vel[1]:.2f}, {ang:.2f})"
@@ -351,17 +436,20 @@ def run_play(task_id: str, cfg: PlayConfig):
       # P-gain for heading alignment (ang_vel_z = gain * heading_error).
       HEADING_ALIGN_GAIN = 2.0
 
-      # PS4 buttons: 0=Cross(X), 1=Circle, 2=Square, 3=Triangle
+      # PS4 buttons (pygame): 0=Cross, 1=Circle, 2=Triangle, 3=Square
       BTN_HEADING_ALIGN = 0   # Cross (X)
       BTN_ABS_VELOCITY = 1    # Circle
-      BTN_NUDGE_ARMS = 2      # Square
+      BTN_ARM_MODE = 2        # Triangle — cycle arm pose mode
+      BTN_NUDGE_ARMS = 3      # Square — toggle arm nudge
 
       # Shared joystick state (read by _JoystickViewer for HUD + nudge).
       js_state = {
         "absolute_velocity": True,
         "heading_align": False,
         "nudge_arms": False,
+        "arm_mode": 0,  # index into _ARM_MODES
       }
+      _prev_arm_btn = False
 
       # Find nudge_arms event index in the event manager's interval terms.
       nudge_event_idx = None
@@ -392,6 +480,7 @@ def run_play(task_id: str, cfg: PlayConfig):
       print("  Circle         : toggle absolute/relative velocity")
       print("  Cross (X)      : toggle heading alignment (absolute mode only)")
       print("  Square         : toggle arm nudge")
+      print("  Triangle       : cycle arm pose mode")
 
       def _joystick_loop():
         while True:
@@ -411,6 +500,15 @@ def run_play(task_id: str, cfg: PlayConfig):
             if new != js_state[key]:
               js_state[key] = new
               print(f"[Joystick] {label}: {'ON' if new else 'OFF'}")
+
+          # Cycle arm mode on Triangle press (edge-detect via toggle).
+          nonlocal _prev_arm_btn
+          arm_toggle = reader.get_button_toggle(BTN_ARM_MODE)
+          if arm_toggle != _prev_arm_btn:
+            _prev_arm_btn = arm_toggle
+            js_state["arm_mode"] = (js_state["arm_mode"] + 1) % len(_ARM_MODES)
+            mode = _ARM_MODES[js_state["arm_mode"]]
+            print(f"[Joystick] Arm mode: {mode['name']}")
 
           try:
             if js_state["absolute_velocity"]:
@@ -488,18 +586,25 @@ def run_play(task_id: str, cfg: PlayConfig):
   else:
     resolved_viewer = cfg.viewer
 
-  if resolved_viewer == "native":
-    if _js_viewer_kwargs is not None:
-      viewer = _JoystickViewer(env, policy, **_js_viewer_kwargs)
+  try:
+    if resolved_viewer == "native":
+      if _js_viewer_kwargs is not None:
+        viewer = _JoystickViewer(env, policy, **_js_viewer_kwargs)
+      else:
+        viewer = _TermLoggingViewer(env, policy)
+      viewer.run()
+    elif resolved_viewer == "viser":
+      ViserPlayViewer(env, policy).run()
     else:
-      viewer = _TermLoggingViewer(env, policy)
-    viewer.run()
-  elif resolved_viewer == "viser":
-    ViserPlayViewer(env, policy).run()
-  else:
-    raise RuntimeError(f"Unsupported viewer backend: {resolved_viewer}")
-
-  env.close()
+      raise RuntimeError(f"Unsupported viewer backend: {resolved_viewer}")
+  except KeyboardInterrupt:
+    print("\n[INFO] Interrupted, exiting...")
+  finally:
+    try:
+      env.close()
+    except Exception:
+      pass
+    os._exit(0)
 
 
 def main():
