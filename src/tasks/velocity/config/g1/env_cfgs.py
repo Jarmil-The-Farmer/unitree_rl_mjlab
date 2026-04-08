@@ -290,25 +290,25 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["pose"].params["std_standing"] = {".*": 0.05}
   cfg.rewards["pose"].params["std_walking"] = {
     r".*hip_pitch.*": 0.5,
-    r".*hip_roll.*": 0.15,
-    r".*hip_yaw.*": 0.15,
+    r".*hip_roll.*": 0.05,   # tight — prevent leg splay
+    r".*hip_yaw.*": 0.05,    # tight — prevent outward leg rotation
     r".*knee.*": 0.5,
     r".*ankle_pitch.*": 0.15,
     r".*ankle_roll.*": 0.1,
-    r".*waist_yaw.*": 0.15,
-    r".*waist_roll.*": 0.1,
-    r".*waist_pitch.*": 0.1,
+    r".*waist_yaw.*": 0.1,
+    r".*waist_roll.*": 0.15,  # allow some waist roll for balance
+    r".*waist_pitch.*": 0.15, # allow some waist pitch for balance
   }
   cfg.rewards["pose"].params["std_running"] = {
     r".*hip_pitch.*": 0.5,
-    r".*hip_roll.*": 0.25,
-    r".*hip_yaw.*": 0.25,
+    r".*hip_roll.*": 0.1,    # tight — prevent leg splay
+    r".*hip_yaw.*": 0.1,     # tight — prevent outward leg rotation
     r".*knee.*": 0.5,
     r".*ankle_pitch.*": 0.25,
     r".*ankle_roll.*": 0.1,
-    r".*waist_yaw.*": 0.25,
-    r".*waist_roll.*": 0.1,
-    r".*waist_pitch.*": 0.1,
+    r".*waist_yaw.*": 0.15,
+    r".*waist_roll.*": 0.2,   # more waist freedom at speed
+    r".*waist_pitch.*": 0.2,
   }
 
   # At reset, only randomize leg/waist joints; arms are reset separately.
@@ -367,9 +367,10 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Stronger balance incentives for the heavy Inspire hands configuration.
   # The forward-extended arms shift COM significantly, requiring more active
   # balance effort than the base G1.
-  cfg.rewards["body_orientation_l2"].weight = -3.0
+  cfg.rewards["body_orientation_l2"].weight = -5.0  # strong upright penalty
   cfg.rewards["stand_still"].weight = -3.0
   cfg.rewards["body_ang_vel"].weight = -0.15
+  cfg.rewards["pose"].weight = 1.5  # stronger pose tracking to keep legs straight
 
   # Start with low standing ratio; curriculum ramps it up once the robot
   # can walk reliably. Final stage: 60% standing with strong arm nudges
