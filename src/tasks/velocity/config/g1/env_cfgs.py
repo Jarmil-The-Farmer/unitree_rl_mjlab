@@ -19,7 +19,7 @@ from src.tasks.velocity.mdp.curriculums import arm_pose_randomization_curriculum
 from src.tasks.velocity.mdp.events import nudge_joints_velocity, randomize_arm_pose
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
-from src.tasks.velocity.mdp.rewards import track_base_height, track_linear_velocity_no_z
+from src.tasks.velocity.mdp.rewards import joint_deviation_l2, track_base_height, track_linear_velocity_no_z
 from src.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
 
@@ -371,6 +371,29 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["stand_still"].weight = -3.0
   cfg.rewards["body_ang_vel"].weight = -0.15
   cfg.rewards["pose"].weight = 1.5  # stronger pose tracking to keep legs straight
+
+  # Dedicated penalties for joints that must stay near zero.
+  # The averaged pose reward is too weak to prevent hip splay/rotation —
+  # these targeted L2 penalties directly punish any deviation.
+  cfg.rewards["hip_lateral_deviation"] = RewardTermCfg(
+    func=joint_deviation_l2,
+    weight=-8.0,
+    params={
+      "asset_cfg": SceneEntityCfg("robot", joint_names=(
+        ".*_hip_roll_joint",
+        ".*_hip_yaw_joint",
+      )),
+    },
+  )
+  cfg.rewards["waist_lateral_deviation"] = RewardTermCfg(
+    func=joint_deviation_l2,
+    weight=-4.0,
+    params={
+      "asset_cfg": SceneEntityCfg("robot", joint_names=(
+        "waist_yaw_joint",
+      )),
+    },
+  )
 
   # Start with low standing ratio; curriculum ramps it up once the robot
   # can walk reliably. Final stage: 60% standing with strong arm nudges

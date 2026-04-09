@@ -446,6 +446,24 @@ def track_linear_velocity_no_z(
   return torch.exp(-xy_error / std**2)
 
 
+def joint_deviation_l2(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize deviation of specified joints from their default positions.
+
+  Returns sum of squared errors for the joints in asset_cfg.
+  Use this as a dedicated penalty for joints that should stay near zero
+  (e.g. hip_roll, hip_yaw) instead of relying on the averaged pose reward.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  diff = (
+    asset.data.joint_pos[:, asset_cfg.joint_ids]
+    - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+  )
+  return torch.sum(torch.square(diff), dim=1)
+
+
 def stand_still(
         env: ManagerBasedRlEnv,
         command_name: str,
