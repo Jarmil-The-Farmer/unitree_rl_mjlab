@@ -3,10 +3,11 @@
 Drop-in replacement for JoystickReader. Uses tkinter (no extra deps).
 
 Controls:
-  Left pad  / WASD       : lin_vel_x, lin_vel_y
-  Right pad / Arrow keys  : ang_vel_z, height (ry)
-  Keys 1,2,3             : toggle buttons 0,1,2 (Cross, Circle, Square)
-  Space                  : zero all axes (emergency stop)
+  Left pad  / WASD        : lin_vel_x, lin_vel_y
+  Right pad / Arrow keys   : ang_vel_z, height (ry)
+  D-pad     / Q (up) E (down) : shoulder pitch (hold)
+  Keys 1,2,3,4            : toggle buttons 0–3 (Cross, Circle, Triangle, Square)
+  Space                   : zero all axes (emergency stop)
 """
 from __future__ import annotations
 
@@ -17,18 +18,28 @@ from typing import Tuple
 # ── Geometry ──────────────────────────────────────────────────────────
 PAD_RADIUS = 100
 KNOB_RADIUS = 16
-PAD_CX_L, PAD_CY = PAD_RADIUS + 30, PAD_RADIUS + 50
-PAD_CX_R = PAD_CX_L + 2 * PAD_RADIUS + 60
+MARGIN = 30
+
+PAD_CX_L = MARGIN + PAD_RADIUS                       # left stick center
+DPAD_CX = PAD_CX_L + PAD_RADIUS + 45                 # D-pad center (between pads)
+PAD_CX_R = DPAD_CX + 45 + PAD_RADIUS                 # right stick center
+PAD_CY = PAD_RADIUS + 50                              # shared vertical center
+
 # PS4-style button diamond to the right of the right pad.
 BTN_R = 18          # button circle radius
 BTN_SP = 36         # spacing from diamond center to each button
 BTN_CX = PAD_CX_R + PAD_RADIUS + 70
 BTN_CY = PAD_CY
-WIN_W = BTN_CX + BTN_SP + BTN_R + 30
+
+# D-pad arrow buttons.
+DPAD_BTN_W = 36
+DPAD_BTN_H = 30
+DPAD_GAP = 6        # gap between up and down arrows
+
+WIN_W = BTN_CX + BTN_SP + BTN_R + MARGIN
 WIN_H = 2 * PAD_RADIUS + 130
 
 # ── Keyboard-axis config ─────────────────────────────────────────────
-# step per key-hold; clamped to [-1, 1]
 KB_STEP = 1.0
 
 
@@ -41,14 +52,16 @@ class VirtualJoystickReader:
     self._ly = 0.0  # left     / right
     self._rz = 0.0  # rotation
     self._ry = 0.0  # height
-    self._dpad_y = 0.0  # D-pad Y: Q = up (-1), E = down (+1)
+    self._dpad_y = 0.0  # D-pad Y: up = -1, down = +1
     self._button_toggles: dict[int, bool] = {}
     self._lock = threading.Lock()
 
     # Keyboard state tracking.
     self._keys_down: set[str] = set()
+    # Mouse-held D-pad direction: None, "up", or "down".
+    self._dpad_mouse: str | None = None
 
-    # Start GUI in its own thread (Tk must own the thread it runs in).
+    # Start GUI in its own thread.
     self._thread = threading.Thread(target=self._run_gui, daemon=True)
     self._thread.start()
 
@@ -58,7 +71,7 @@ class VirtualJoystickReader:
       return (self._lx, self._ly, self._rz, self._ry)
 
   def get_dpad_y(self) -> float:
-    """Returns D-pad Y axis: Q = up (-1), E = down (+1), 0 = neutral."""
+    """Returns D-pad Y axis: -1 = up, +1 = down, 0 = neutral."""
     with self._lock:
       return self._dpad_y
 
@@ -76,34 +89,63 @@ class VirtualJoystickReader:
     canvas.pack()
     self._canvas = canvas
 
-    # Draw pads.
-    for cx, label in [(PAD_CX_L, "Move (WASD)"), (PAD_CX_R, "Rotate/Height (\u2190\u2191\u2192\u2193)")]:
+    # Draw stick pads.
+    for cx, label in [(PAD_CX_L, "Move (WASD)"), (PAD_CX_R, "Rot/Height (\u2190\u2191\u2192\u2193)")]:
       canvas.create_oval(
         cx - PAD_RADIUS, PAD_CY - PAD_RADIUS,
         cx + PAD_RADIUS, PAD_CY + PAD_RADIUS,
         outline="#555", width=2,
       )
-      # cross-hair
       canvas.create_line(cx - PAD_RADIUS, PAD_CY, cx + PAD_RADIUS, PAD_CY, fill="#333")
       canvas.create_line(cx, PAD_CY - PAD_RADIUS, cx, PAD_CY + PAD_RADIUS, fill="#333")
       canvas.create_text(cx, PAD_CY + PAD_RADIUS + 16, text=label, fill="#aaa", font=("sans", 10))
 
-    # Knobs (draggable circles).
+    # Knobs (draggable).
     self._knob_l = self._make_knob(canvas, PAD_CX_L, PAD_CY)
     self._knob_r = self._make_knob(canvas, PAD_CX_R, PAD_CY)
 
+    # ── D-pad (up/down arrows between the pads) ─────────────────────
+    dpad_top = PAD_CY - DPAD_BTN_H - DPAD_GAP // 2
+    dpad_bot = PAD_CY + DPAD_GAP // 2
+    self._dpad_up_rect = canvas.create_rectangle(
+      DPAD_CX - DPAD_BTN_W // 2, dpad_top,
+      DPAD_CX + DPAD_BTN_W // 2, dpad_top + DPAD_BTN_H,
+      fill="#334", outline="#555", width=2,
+    )
+    canvas.create_text(DPAD_CX, dpad_top + DPAD_BTN_H // 2,
+                       text="\u25b2", fill="#ccc", font=("sans", 14))
+    self._dpad_down_rect = canvas.create_rectangle(
+      DPAD_CX - DPAD_BTN_W // 2, dpad_bot,
+      DPAD_CX + DPAD_BTN_W // 2, dpad_bot + DPAD_BTN_H,
+      fill="#334", outline="#555", width=2,
+    )
+    canvas.create_text(DPAD_CX, dpad_bot + DPAD_BTN_H // 2,
+                       text="\u25bc", fill="#ccc", font=("sans", 14))
+    # Store rects for hit-test.
+    self._dpad_up_bbox = (
+      DPAD_CX - DPAD_BTN_W // 2, dpad_top,
+      DPAD_CX + DPAD_BTN_W // 2, dpad_top + DPAD_BTN_H,
+    )
+    self._dpad_down_bbox = (
+      DPAD_CX - DPAD_BTN_W // 2, dpad_bot,
+      DPAD_CX + DPAD_BTN_W // 2, dpad_bot + DPAD_BTN_H,
+    )
+    canvas.create_text(DPAD_CX, dpad_bot + DPAD_BTN_H + 14,
+                       text="Shoulder (Q/E)", fill="#aaa", font=("sans", 9))
+
     # ── PS4 button diamond (right side) ──────────────────────────────
-    #        Triangle [4]
-    #   Square [3]   Circle [2]
+    # pygame mapping: 0=Cross, 1=Circle, 2=Triangle, 3=Square
+    #        Triangle [3]
+    #   Square [4]   Circle [2]
     #        Cross [1]
     self._btn_ids: dict[int, int] = {}
     self._btn_label_ids: dict[int, int] = {}
     # (button_index, dx, dy, symbol, off_color, on_color, key_label)
     ps4_buttons = [
-      (0, 0, +BTN_SP, "\u2715", "#334", "#5577dd", "1"),    # Cross   – bottom
-      (1, +BTN_SP, 0, "\u25cb", "#334", "#dd5555", "2"),    # Circle  – right
-      (2, -BTN_SP, 0, "\u25a1", "#334", "#cc55aa", "3"),    # Square  – left
-      (3, 0, -BTN_SP, "\u25b3", "#334", "#55bb77", "4"),    # Triangle – top
+      (0, 0, +BTN_SP, "\u2715", "#334", "#5577dd", "1"),    # Cross    – bottom
+      (1, +BTN_SP, 0, "\u25cb", "#334", "#dd5555", "2"),    # Circle   – right
+      (2, 0, -BTN_SP, "\u25b3", "#334", "#55bb77", "3"),    # Triangle – top
+      (3, -BTN_SP, 0, "\u25a1", "#334", "#cc55aa", "4"),    # Square   – left
     ]
     for idx, dx, dy, sym, off_col, on_col, kl in ps4_buttons:
       bx = BTN_CX + dx
@@ -116,7 +158,6 @@ class VirtualJoystickReader:
       lid = canvas.create_text(bx, by + BTN_R + 10, text=kl, fill="#666", font=("sans", 8))
       self._btn_ids[idx] = oid
       self._btn_label_ids[idx] = lid
-    # Store colors for toggle feedback.
     self._btn_off = {i: c[3] for i, *c in ps4_buttons}
     self._btn_on = {i: c[4] for i, *c in ps4_buttons}
     canvas.create_text(BTN_CX, BTN_CY + BTN_SP + BTN_R + 26,
@@ -144,7 +185,7 @@ class VirtualJoystickReader:
     root.bind("<KeyPress>", self._on_key_press)
     root.bind("<KeyRelease>", self._on_key_release)
 
-    # Periodic keyboard axis update.
+    # Periodic update.
     self._update_from_keys()
 
     root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -158,14 +199,32 @@ class VirtualJoystickReader:
       fill="#4a90d9", outline="#6ab0ff", width=2,
     )
 
+  @staticmethod
+  def _in_rect(x: int, y: int, bbox: tuple) -> bool:
+    return bbox[0] <= x <= bbox[2] and bbox[1] <= y <= bbox[3]
+
   # ── Mouse handlers ────────────────────────────────────────────────
   def _on_press(self, event):
-    # Check PS4 buttons first.
+    # D-pad arrows (hold-to-activate).
+    if self._in_rect(event.x, event.y, self._dpad_up_bbox):
+      self._dpad_mouse = "up"
+      self._canvas.itemconfig(self._dpad_up_rect, fill="#4a90d9")
+      with self._lock:
+        self._dpad_y = -1.0
+      return
+    if self._in_rect(event.x, event.y, self._dpad_down_bbox):
+      self._dpad_mouse = "down"
+      self._canvas.itemconfig(self._dpad_down_rect, fill="#4a90d9")
+      with self._lock:
+        self._dpad_y = 1.0
+      return
+
+    # PS4 buttons.
     btn_offsets = {
-      0: (0, +BTN_SP),   # Cross   – bottom
-      1: (+BTN_SP, 0),   # Circle  – right
-      2: (-BTN_SP, 0),   # Square  – left
-      3: (0, -BTN_SP),   # Triangle – top
+      0: (0, +BTN_SP),   # Cross    – bottom
+      1: (+BTN_SP, 0),   # Circle   – right
+      2: (0, -BTN_SP),   # Triangle – top
+      3: (-BTN_SP, 0),   # Square   – left
     }
     for idx, (dx, dy) in btn_offsets.items():
       bx = BTN_CX + dx
@@ -174,6 +233,7 @@ class VirtualJoystickReader:
         self._toggle_button(idx)
         return
 
+    # Stick pads.
     dl = ((event.x - PAD_CX_L) ** 2 + (event.y - PAD_CY) ** 2) ** 0.5
     dr = ((event.x - PAD_CX_R) ** 2 + (event.y - PAD_CY) ** 2) ** 0.5
     if dl <= PAD_RADIUS:
@@ -188,6 +248,21 @@ class VirtualJoystickReader:
       self._move_knob(self._dragging, event.x, event.y)
 
   def _on_release(self, _event):
+    # Release D-pad.
+    if self._dpad_mouse == "up":
+      self._canvas.itemconfig(self._dpad_up_rect, fill="#334")
+      with self._lock:
+        self._dpad_y = 0.0
+      self._dpad_mouse = None
+      return
+    if self._dpad_mouse == "down":
+      self._canvas.itemconfig(self._dpad_down_rect, fill="#334")
+      with self._lock:
+        self._dpad_y = 0.0
+      self._dpad_mouse = None
+      return
+
+    # Release stick.
     if self._dragging == "L":
       self._set_knob_pos("L", 0, 0)
       self._move_knob_visual(self._knob_l, PAD_CX_L, PAD_CY)
@@ -206,7 +281,6 @@ class VirtualJoystickReader:
     cx = PAD_CX_L if side == "L" else PAD_CX_R
     dx = (mx - cx) / PAD_RADIUS
     dy = (my - PAD_CY) / PAD_RADIUS
-    # clamp to unit circle
     dist = (dx * dx + dy * dy) ** 0.5
     if dist > 1.0:
       dx /= dist
@@ -226,10 +300,10 @@ class VirtualJoystickReader:
     """dx: right+, dy: down+.  Map to robot axes."""
     with self._lock:
       if side == "L":
-        self._lx = -dy  # stick up = forward = positive lx
+        self._lx = -dy  # stick up = forward
         self._ly = -dx  # stick left = positive ly
       else:
-        self._rz = -dx  # stick left = positive rz (turn left)
+        self._rz = -dx  # stick left = positive rz
         self._ry = -dy  # stick up = positive ry
 
   def _toggle_button(self, idx: int):
@@ -261,7 +335,7 @@ class VirtualJoystickReader:
     self._keys_down.discard(event.keysym.lower())
 
   def _update_from_keys(self):
-    """Called every 20ms to update axes from held keys (only when not mouse-dragging)."""
+    """Called every 20ms to update axes from held keys."""
     keys = self._keys_down
 
     if self._dragging != "L":
@@ -277,7 +351,6 @@ class VirtualJoystickReader:
       with self._lock:
         self._lx = max(-1.0, min(1.0, lx))
         self._ly = max(-1.0, min(1.0, ly))
-      # Update knob visual.
       self._move_knob_visual(
         self._knob_l,
         PAD_CX_L - self._ly * PAD_RADIUS,
@@ -303,14 +376,20 @@ class VirtualJoystickReader:
         PAD_CY - self._ry * PAD_RADIUS,
       )
 
-    # D-pad Y via Q/E keys (shoulder control).
-    dpad_y = 0.0
-    if "q" in keys:
-      dpad_y -= 1.0  # up
-    if "e" in keys:
-      dpad_y += 1.0  # down
-    with self._lock:
-      self._dpad_y = max(-1.0, min(1.0, dpad_y))
+    # D-pad Y via Q/E keys (only when not mouse-holding D-pad).
+    if self._dpad_mouse is None:
+      dpad_y = 0.0
+      if "q" in keys:
+        dpad_y -= 1.0  # up
+      if "e" in keys:
+        dpad_y += 1.0  # down
+      with self._lock:
+        self._dpad_y = max(-1.0, min(1.0, dpad_y))
+      # Visual feedback on D-pad arrows for keyboard.
+      self._canvas.itemconfig(
+        self._dpad_up_rect, fill="#4a90d9" if dpad_y < 0 else "#334")
+      self._canvas.itemconfig(
+        self._dpad_down_rect, fill="#4a90d9" if dpad_y > 0 else "#334")
 
     # Update readout text.
     with self._lock:
