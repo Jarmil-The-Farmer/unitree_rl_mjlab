@@ -21,6 +21,13 @@ def unitree_g1_balance_height_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   return cfg
 
 
+def unitree_g1_balance_standing_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create RL runner configuration for Unitree G1 standing-only balance task."""
+  cfg = unitree_g1_ppo_runner_cfg()
+  cfg.experiment_name = "g1_balance_standing"
+  return cfg
+
+
 def unitree_g1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create RL runner configuration for Unitree G1 velocity task."""
   return RslRlOnPolicyRunnerCfg(

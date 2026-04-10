@@ -81,9 +81,14 @@ def randomize_arm_pose(
   el = torch.empty(n, device=env.device).uniform_(*elbow_range)
 
   # Build position tensor for all arm joints.
+  # joint_names may be regex patterns (7) while joint_ids are resolved (14,
+  # covering both left and right). Use the resolved entity joint names to
+  # match by actual name instead of iterating over the pattern list.
   num_joints = len(asset_cfg.joint_ids)
   joint_pos = torch.zeros(n, num_joints, device=env.device)
-  for i, name in enumerate(asset_cfg.joint_names):
+  all_joint_names = asset.joint_names
+  for i, jid in enumerate(asset_cfg.joint_ids):
+    name = all_joint_names[jid]
     if "shoulder_pitch" in name:
       joint_pos[:, i] = sp
     elif "elbow" in name:
