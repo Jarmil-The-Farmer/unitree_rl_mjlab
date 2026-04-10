@@ -571,27 +571,29 @@ def unitree_g1_flat_balance_standing_env_cfg(play: bool = False) -> ManagerBased
                "foot_gait", "foot_clearance", "foot_slip", "soft_landing"):
     cfg.rewards.pop(name, None)
 
-  # Pose reward: very permissive waist pitch/roll so robot can lean freely
-  # to compensate for any arm position. Tight hip_roll/yaw.
-  # Pose reward: permissive for joints that help balance (waist pitch, knees,
-  # ankle pitch, hip pitch). Tight for joints that should stay near zero
-  # (hip roll/yaw, ankle roll, waist yaw). Robot can freely bend knees,
-  # lean in waist, and adjust ankles to find the optimal standing pose.
-  cfg.rewards["pose"].weight = 0.5
+  # Disable stand_still — it penalizes ALL joint deviations including
+  # knees/hip_pitch which the robot MUST bend to balance with arms.
+  cfg.rewards["stand_still"].weight = 0.0
+
+  # Pose reward: only penalize lateral joints (hip_roll, hip_yaw, ankle_roll,
+  # waist_yaw). All sagittal joints (hip_pitch, knee, ankle_pitch, waist_pitch)
+  # are fully free so the robot can squat and lean as needed.
+  cfg.rewards["pose"].weight = 0.3
   cfg.rewards["pose"].params["std_standing"] = {
-    r".*hip_pitch.*": 0.5,    # free — squat/lean needs hip flex
-    r".*hip_roll.*": 0.05,
-    r".*hip_yaw.*": 0.05,
-    r".*knee.*": 0.5,         # free — robot can bend knees to lower COM
-    r".*ankle_pitch.*": 0.5,  # free — ankle lean is key for balance
+    r".*hip_pitch.*": 10.0,   # completely free
+    r".*hip_roll.*": 0.08,    # slightly relaxed for stability
+    r".*hip_yaw.*": 0.08,     # slightly relaxed for stability
+    r".*knee.*": 10.0,        # completely free
+    r".*ankle_pitch.*": 10.0, # completely free
     r".*ankle_roll.*": 0.05,
     r".*waist_yaw.*": 0.08,
-    r".*waist_roll.*": 0.4,
-    r".*waist_pitch.*": 0.5,  # free — main balance tool
+    r".*waist_roll.*": 0.5,
+    r".*waist_pitch.*": 10.0, # completely free
   }
 
-  # Body orientation: mild — robot needs to lean to compensate arms.
-  cfg.rewards["body_orientation_l2"].weight = -1.5
+  # Body orientation: the main upright signal. Robot must keep torso upright
+  # but can achieve this through any combination of knee bend + waist lean.
+  cfg.rewards["body_orientation_l2"].weight = -5.0
 
   # Strong penalty for any horizontal base movement.
   cfg.rewards["stand_still_lin_vel"] = RewardTermCfg(
@@ -600,12 +602,8 @@ def unitree_g1_flat_balance_standing_env_cfg(play: bool = False) -> ManagerBased
     params={"command_name": "twist", "command_threshold": 0.1},
   )
 
-  # Reduce stand_still weight — it penalizes ALL joint deviations from
-  # default including knees/waist pitch which the robot needs to bend.
-  cfg.rewards["stand_still"].weight = -1.0
-
-  # Hip lateral deviation stays strong.
-  cfg.rewards["hip_lateral_deviation"].weight = -10.0
+  # Hip lateral deviation — relaxed slightly so robot can fine-tune stance.
+  cfg.rewards["hip_lateral_deviation"].weight = -5.0
 
   # Arm curriculum: start with fully extended arms so robot learns the hardest
   # case first, then widen range to include all positions.
