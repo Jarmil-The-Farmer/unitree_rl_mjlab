@@ -200,7 +200,8 @@ class _JoystickViewer(_TermLoggingViewer):
     """Write arm qpos + PD targets for the active arm mode."""
     mode = _ARM_MODES[self._arm_mode_idx]
     robot = self._cmd_term.robot
-    sp = mode["shoulder_pitch"]
+    # Use D-pad accumulated shoulder_pitch instead of fixed mode value.
+    sp = self._js.get("shoulder_pitch", mode["shoulder_pitch"])
     el = mode["elbow"]
     for idx in self._arm_shoulder_ids:
       robot.data.default_joint_pos[:, idx] = sp
@@ -259,7 +260,7 @@ class _JoystickViewer(_TermLoggingViewer):
       font, pos, text_1, text_2 = overlay
       arm_mode_name = _ARM_MODES[s.get("arm_mode", 0)]["name"]
       text_1 += (
-        "\n \n[O] Velocity\n[X] Heading\n[S] Nudge\n[T] Arms"
+        "\n \n[O] Velocity\n[X] Heading\n[S] Nudge\n[T] Arms\nShoulder"
         "\n \nCmd Vel\nCur Vel"
       )
       text_2 += (
@@ -267,7 +268,8 @@ class _JoystickViewer(_TermLoggingViewer):
         f"{'ABSOLUTE' if s['absolute_velocity'] else 'RELATIVE'}\n"
         f"{'ON' if s['heading_align'] else 'OFF'}\n"
         f"{'ON' if s['nudge_arms'] else 'OFF'}\n"
-        f"{arm_mode_name}"
+        f"{arm_mode_name}\n"
+        f"{s.get('shoulder_pitch', 0.0):.2f} rad"
         f"\n \n"
         f"({cmd[0]:.2f}, {cmd[1]:.2f}, {cmd[2]:.2f})\n"
         f"({vel[0]:.2f}, {vel[1]:.2f}, {ang:.2f})"
@@ -442,12 +444,18 @@ def run_play(task_id: str, cfg: PlayConfig):
       BTN_ARM_MODE = 2        # Triangle — cycle arm pose mode
       BTN_NUDGE_ARMS = 3      # Square — toggle arm nudge
 
+      # Resolve shoulder_pitch joint limits from the physics model.
+      SHOULDER_PITCH_MIN = -3.0892
+      SHOULDER_PITCH_MAX = 2.6704
+      SHOULDER_SPEED = 1.5  # rad/s while D-pad is held
+
       # Shared joystick state (read by _JoystickViewer for HUD + nudge).
       js_state = {
         "absolute_velocity": True,
         "heading_align": False,
         "nudge_arms": False,
         "arm_mode": 0,  # index into _ARM_MODES
+        "shoulder_pitch": 0.0,  # accumulated via D-pad
       }
       _prev_arm_btn = False
 
@@ -477,6 +485,7 @@ def run_play(task_id: str, cfg: PlayConfig):
       print("  Right stick X  : rotate (ang_vel_z)")
       if has_height:
         print(f"  Right stick Y  : height ({height_min:.2f}–{height_max:.2f}m)")
+      print("  D-pad up/down  : shoulder pitch (hold to move)")
       print("  Circle         : toggle absolute/relative velocity")
       print("  Cross (X)      : toggle heading alignment (absolute mode only)")
       print("  Square         : toggle arm nudge")
@@ -542,6 +551,13 @@ def run_play(task_id: str, cfg: PlayConfig):
             cmd_term.is_heading_env[:] = False
           except Exception:
             pass
+
+          # D-pad up/down → accumulate shoulder_pitch.
+          dpad_y = reader.get_dpad_y()
+          if dpad_y != 0:
+            sp = js_state["shoulder_pitch"] + dpad_y * SHOULDER_SPEED * 0.02
+            js_state["shoulder_pitch"] = max(SHOULDER_PITCH_MIN, min(SHOULDER_PITCH_MAX, sp))
+
           time.sleep(0.02)
 
       t = threading.Thread(target=_joystick_loop, daemon=True)

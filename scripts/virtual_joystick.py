@@ -41,6 +41,7 @@ class VirtualJoystickReader:
     self._ly = 0.0  # left     / right
     self._rz = 0.0  # rotation
     self._ry = 0.0  # height
+    self._dpad_y = 0.0  # D-pad Y: Q = up (-1), E = down (+1)
     self._button_toggles: dict[int, bool] = {}
     self._lock = threading.Lock()
 
@@ -55,6 +56,11 @@ class VirtualJoystickReader:
   def get_values(self) -> Tuple[float, float, float, float]:
     with self._lock:
       return (self._lx, self._ly, self._rz, self._ry)
+
+  def get_dpad_y(self) -> float:
+    """Returns D-pad Y axis: Q = up (-1), E = down (+1), 0 = neutral."""
+    with self._lock:
+      return self._dpad_y
 
   def get_button_toggle(self, button: int) -> bool:
     with self._lock:
@@ -297,12 +303,22 @@ class VirtualJoystickReader:
         PAD_CY - self._ry * PAD_RADIUS,
       )
 
+    # D-pad Y via Q/E keys (shoulder control).
+    dpad_y = 0.0
+    if "q" in keys:
+      dpad_y -= 1.0  # up
+    if "e" in keys:
+      dpad_y += 1.0  # down
+    with self._lock:
+      self._dpad_y = max(-1.0, min(1.0, dpad_y))
+
     # Update readout text.
     with self._lock:
       lx, ly, rz, ry = self._lx, self._ly, self._rz, self._ry
+      dp = self._dpad_y
     self._canvas.itemconfig(
       self._readout,
-      text=f"lx={lx:+.2f}  ly={ly:+.2f}  rz={rz:+.2f}  ry={ry:+.2f}",
+      text=f"lx={lx:+.2f}  ly={ly:+.2f}  rz={rz:+.2f}  ry={ry:+.2f}  dpad={dp:+.0f}",
     )
 
     self._root.after(20, self._update_from_keys)

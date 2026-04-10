@@ -17,6 +17,7 @@ class JoystickReader:
     self._ly = 0.0
     self._rz = 0.0
     self._ry = 0.0
+    self._dpad_y = 0.0
     self._buttons: dict[int, bool] = {}
     self._button_toggles: dict[int, bool] = {}
     self._prev_buttons: dict[int, bool] = {}
@@ -61,6 +62,16 @@ class JoystickReader:
           ax_rstick_x = self._safe_axis(2)
           ax_rstick_y = self._safe_axis(3)
 
+        # D-pad Y: axis 7 on PS4/Linux, fallback to hat.
+        # jstest/pygame: up = -1, down = +1.
+        dpad_y = 0.0
+        ax7 = self._safe_axis(7)
+        if ax7 is not None and abs(ax7) > 0.5:
+          dpad_y = float(ax7)
+        elif self._joy.get_numhats() > 0:
+          _, hy = self._joy.get_hat(0)
+          dpad_y = float(-hy)  # hat up = +1, we want up = -1
+
         # Map axes: stick Y (forward/back) → lin_vel_x, stick X (left/right) → lin_vel_y.
         # Invert stick Y so pushing forward => positive lin_vel_x.
         lx = self._apply_deadzone(float(-(ax_lstick_y or 0.0)))
@@ -78,6 +89,7 @@ class JoystickReader:
           self._ly = ly
           self._rz = rz
           self._ry = ry
+          self._dpad_y = dpad_y
           for i, pressed in buttons.items():
             was_pressed = self._prev_buttons.get(i, False)
             if pressed and not was_pressed:
@@ -103,6 +115,11 @@ class JoystickReader:
   def get_values(self) -> Tuple[float, float, float, float]:
     with self._lock:
       return (self._lx, self._ly, self._rz, self._ry)
+
+  def get_dpad_y(self) -> float:
+    """Returns D-pad Y axis: -1 = up, +1 = down, 0 = neutral."""
+    with self._lock:
+      return self._dpad_y
 
   def get_button_toggle(self, button: int) -> bool:
     """Returns toggle state for a button (flips on each press)."""
