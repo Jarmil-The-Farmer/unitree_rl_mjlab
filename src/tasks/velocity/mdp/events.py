@@ -54,13 +54,17 @@ def randomize_arm_pose(
   env_ids: torch.Tensor | None,
   shoulder_pitch_range: tuple[float, float],
   elbow_range: tuple[float, float],
+  shoulder_roll_range: tuple[float, float] | None = None,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-  """Randomize arm shoulder_pitch and elbow positions per-env on reset.
+  """Randomize arm positions per-env on reset.
 
-  Samples a random arm pose from the given ranges, writes it into qpos
-  and sets PD targets to hold it. Does NOT modify default_joint_pos so
-  that joint_pos_rel observations reflect the absolute arm position.
+  Samples random shoulder_pitch, elbow, and optionally shoulder_roll values.
+  For shoulder_roll, left side uses the range as-is (positive = away from body)
+  and right side uses the negated range (negative = away from body).
+
+  Does NOT modify default_joint_pos so that joint_pos_rel observations
+  reflect the absolute arm position.
   """
   if env_ids is None:
     env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
@@ -76,9 +80,12 @@ def randomize_arm_pose(
   else:
     joint_ids_t = joint_ids
 
-  # Sample one shoulder_pitch and one elbow value per env.
+  # Sample one value per env for each joint type (applied symmetrically).
   sp = torch.empty(n, device=env.device).uniform_(*shoulder_pitch_range)
   el = torch.empty(n, device=env.device).uniform_(*elbow_range)
+  sr = None
+  if shoulder_roll_range is not None:
+    sr = torch.empty(n, device=env.device).uniform_(*shoulder_roll_range)
 
   # Build position tensor for all arm joints.
   # joint_names may be regex patterns (7) while joint_ids are resolved (14,
@@ -91,9 +98,17 @@ def randomize_arm_pose(
     name = all_joint_names[jid]
     if "shoulder_pitch" in name:
       joint_pos[:, i] = sp
+    elif "shoulder_roll" in name:
+      if sr is not None:
+        # Left side: positive roll = away from body.
+        # Right side: negative roll = away from body.
+        if "right" in name:
+          joint_pos[:, i] = -sr
+        else:
+          joint_pos[:, i] = sr
     elif "elbow" in name:
       joint_pos[:, i] = el
-    # Other arm joints (shoulder_roll, yaw, wrist) stay at 0.
+    # Other arm joints (shoulder_yaw, wrist) stay at 0.
 
   joint_vel = torch.zeros_like(joint_pos)
 
