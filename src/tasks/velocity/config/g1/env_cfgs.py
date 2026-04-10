@@ -287,28 +287,41 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["pose"].params["asset_cfg"] = SceneEntityCfg(
     "robot", joint_names=_leg_waist_joint_names
   )
-  cfg.rewards["pose"].params["std_standing"] = {".*": 0.05}
+  # Standing pose std: waist_pitch/ankle_pitch/hip_pitch permissive so the
+  # robot can lean backward to counter forward-extended arms. hip_roll/yaw
+  # stay tight (dedicated penalty handles them).
+  cfg.rewards["pose"].params["std_standing"] = {
+    r".*hip_pitch.*": 0.3,    # allow slight lean
+    r".*hip_roll.*": 0.05,
+    r".*hip_yaw.*": 0.05,
+    r".*knee.*": 0.15,
+    r".*ankle_pitch.*": 0.3,  # allow ankle lean for balance
+    r".*ankle_roll.*": 0.05,
+    r".*waist_yaw.*": 0.08,
+    r".*waist_roll.*": 0.15,
+    r".*waist_pitch.*": 0.4,  # free to lean forward/backward
+  }
   cfg.rewards["pose"].params["std_walking"] = {
     r".*hip_pitch.*": 0.5,
-    r".*hip_roll.*": 0.05,   # tight — prevent leg splay
-    r".*hip_yaw.*": 0.05,    # tight — prevent outward leg rotation
+    r".*hip_roll.*": 0.05,
+    r".*hip_yaw.*": 0.05,
     r".*knee.*": 0.5,
-    r".*ankle_pitch.*": 0.15,
+    r".*ankle_pitch.*": 0.3,
     r".*ankle_roll.*": 0.1,
     r".*waist_yaw.*": 0.1,
-    r".*waist_roll.*": 0.15,  # allow some waist roll for balance
-    r".*waist_pitch.*": 0.15, # allow some waist pitch for balance
+    r".*waist_roll.*": 0.15,
+    r".*waist_pitch.*": 0.3,  # allow lean during walking
   }
   cfg.rewards["pose"].params["std_running"] = {
     r".*hip_pitch.*": 0.5,
-    r".*hip_roll.*": 0.1,    # tight — prevent leg splay
-    r".*hip_yaw.*": 0.1,     # tight — prevent outward leg rotation
+    r".*hip_roll.*": 0.1,
+    r".*hip_yaw.*": 0.1,
     r".*knee.*": 0.5,
-    r".*ankle_pitch.*": 0.25,
+    r".*ankle_pitch.*": 0.3,
     r".*ankle_roll.*": 0.1,
     r".*waist_yaw.*": 0.15,
-    r".*waist_roll.*": 0.2,   # more waist freedom at speed
-    r".*waist_pitch.*": 0.2,
+    r".*waist_roll.*": 0.2,
+    r".*waist_pitch.*": 0.3,
   }
 
   # At reset, only randomize leg/waist joints; arms are reset separately.
@@ -367,10 +380,10 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Stronger balance incentives for the heavy Inspire hands configuration.
   # The forward-extended arms shift COM significantly, requiring more active
   # balance effort than the base G1.
-  cfg.rewards["body_orientation_l2"].weight = -5.0  # strong upright penalty
+  cfg.rewards["body_orientation_l2"].weight = -3.0  # moderate — robot needs to lean to compensate arms
   cfg.rewards["stand_still"].weight = -3.0
   cfg.rewards["body_ang_vel"].weight = -0.15
-  cfg.rewards["pose"].weight = 1.5  # stronger pose tracking to keep legs straight
+  cfg.rewards["pose"].weight = 1.5
 
   # Dedicated penalties for joints that must stay near zero.
   # The averaged pose reward is too weak to prevent hip splay/rotation —
@@ -403,35 +416,31 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   twist_cmd.rel_standing_envs = 0.1
 
   # Curriculum: gradually shift focus from walking to standing balance.
-  #  1) First learn to walk with gentle arm nudges.
-  #  2) Increase standing ratio and arm perturbation intensity.
-  #  3) Final phase: mostly standing with strong arm movement.
+  # Faster ramp — standing balance with arms is the main goal.
   cfg.curriculum["standing_balance"] = CurriculumTermCfg(
     func=standing_balance,
     params={
       "command_name": "twist",
       "nudge_event_name": "nudge_arms",
       "stages": [
-        {"step": 0,          "rel_standing_envs": 0.1, "nudge_velocity_range": (-1, 1)},
-        {"step": 3000 * 24,  "rel_standing_envs": 0.3, "nudge_velocity_range": (-3, 3)},
-        {"step": 6000 * 24,  "rel_standing_envs": 0.5, "nudge_velocity_range": (-5, 5)},
-        {"step": 9000 * 24,  "rel_standing_envs": 0.6, "nudge_velocity_range": (-7, 7)},
+        {"step": 0,          "rel_standing_envs": 0.2, "nudge_velocity_range": (-1, 1)},
+        {"step": 2000 * 24,  "rel_standing_envs": 0.4, "nudge_velocity_range": (-3, 3)},
+        {"step": 4000 * 24,  "rel_standing_envs": 0.6, "nudge_velocity_range": (-5, 5)},
+        {"step": 6000 * 24,  "rel_standing_envs": 0.7, "nudge_velocity_range": (-7, 7)},
       ],
     },
   )
 
-  # Curriculum: gradually widen arm pose randomization range.
-  # Early training: narrow range near (0,0) so robot learns to walk first.
-  # Later: full range so robot sees all arm configurations every episode.
+  # Curriculum: arm pose randomization range.
+  # Faster ramp so robot gets more training time with fully extended arms.
   cfg.curriculum["arm_pose_range"] = CurriculumTermCfg(
     func=arm_pose_randomization_curriculum,
     params={
       "reset_event_name": "randomize_arm_pose",
       "stages": [
-        {"step": 0,          "shoulder_pitch_range": (-0.3, 0.0), "elbow_range": (0.0, 0.3)},
-        {"step": 2000 * 24,  "shoulder_pitch_range": (-0.8, 0.0), "elbow_range": (0.0, 0.8)},
-        {"step": 4000 * 24,  "shoulder_pitch_range": (-1.2, 0.0), "elbow_range": (0.0, 1.2)},
-        {"step": 6000 * 24,  "shoulder_pitch_range": (-1.6, 0.0), "elbow_range": (0.0, 1.57)},
+        {"step": 0,          "shoulder_pitch_range": (-0.5, 0.0), "elbow_range": (0.0, 0.5)},
+        {"step": 1500 * 24,  "shoulder_pitch_range": (-1.0, 0.0), "elbow_range": (0.0, 1.0)},
+        {"step": 3000 * 24,  "shoulder_pitch_range": (-1.6, 0.0), "elbow_range": (0.0, 1.57)},
       ],
     },
   )
@@ -523,12 +532,16 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
   # pulls it). This directly punishes any XY motion during stand commands.
   cfg.rewards["stand_still_lin_vel"] = RewardTermCfg(
     func=stand_still_lin_vel,
-    weight=-2.0,
+    weight=-5.0,
     params={"command_name": "twist", "command_threshold": 0.1},
   )
 
   # 6) Strengthen hip lateral deviation penalty for the height task —
   # arm-induced COM shifts can tempt the policy into asymmetric leg poses.
   cfg.rewards["hip_lateral_deviation"].weight = -10.0
+
+  # 7) Reduce body_orientation_l2 further — with extended arms the robot
+  # MUST lean back to keep COM over feet. Strong upright penalty prevents this.
+  cfg.rewards["body_orientation_l2"].weight = -2.0
 
   return cfg
