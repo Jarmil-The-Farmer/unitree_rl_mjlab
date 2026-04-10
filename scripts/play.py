@@ -197,17 +197,20 @@ class _JoystickViewer(_TermLoggingViewer):
       em._interval_term_time_left[self._nudge_idx][:] = 1e9
 
   def _apply_arm_mode(self):
-    """Write arm qpos + PD targets for the active arm mode."""
+    """Write arm PD targets for the active arm mode.
+
+    Keep ``default_joint_pos`` untouched so ``joint_pos_rel`` observations
+    preserve the same meaning as during training: actual arm displacement
+    relative to the robot's keyframe default pose.
+    """
     mode = _ARM_MODES[self._arm_mode_idx]
     robot = self._cmd_term.robot
     # Use D-pad accumulated shoulder_pitch instead of fixed mode value.
     sp = self._js.get("shoulder_pitch", mode["shoulder_pitch"])
     el = mode["elbow"]
     for idx in self._arm_shoulder_ids:
-      robot.data.default_joint_pos[:, idx] = sp
       robot.data.joint_pos_target[:, idx] = sp
     for idx in self._arm_elbow_ids:
-      robot.data.default_joint_pos[:, idx] = el
       robot.data.joint_pos_target[:, idx] = el
 
   def _execute_step(self) -> bool:
