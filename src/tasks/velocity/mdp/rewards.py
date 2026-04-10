@@ -446,6 +446,31 @@ def track_linear_velocity_no_z(
   return torch.exp(-xy_error / std**2)
 
 
+def stand_still_lin_vel(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize horizontal base linear velocity when velocity command is zero.
+
+  Specifically targets the "standing still" case — when the robot is commanded
+  to stand (|cmd_vel| <= threshold), any horizontal base motion is penalized.
+  Returns L2 norm squared of body lin_vel XY, masked by standing condition.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  lin_vel_xy = asset.data.root_link_lin_vel_b[:, :2]
+  penalty = torch.sum(torch.square(lin_vel_xy), dim=1)
+
+  command = env.command_manager.get_command(command_name)
+  if command is not None:
+    linear_norm = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    is_standing = (linear_norm + angular_norm) <= command_threshold
+    penalty = penalty * is_standing.float()
+  return penalty
+
+
 def joint_deviation_l2(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,

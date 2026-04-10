@@ -19,7 +19,7 @@ from src.tasks.velocity.mdp.curriculums import arm_pose_randomization_curriculum
 from src.tasks.velocity.mdp.events import nudge_joints_velocity, randomize_arm_pose
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
-from src.tasks.velocity.mdp.rewards import joint_deviation_l2, track_base_height, track_linear_velocity_no_z
+from src.tasks.velocity.mdp.rewards import joint_deviation_l2, stand_still_lin_vel, track_base_height, track_linear_velocity_no_z
 from src.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
 
@@ -502,17 +502,33 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
   cfg.rewards["pose"].weight = 0.3
 
   # Relax pose std for standing — squatting requires large knee/hip/ankle
-  # deviations from the default standing pose.
+  # deviations. Waist pitch is MORE permissive so the robot can lean back
+  # to counter forward-extended arms (shifts COM back over the feet).
+  # hip_roll/yaw stay tight (leg splay already penalized via
+  # hip_lateral_deviation).
   cfg.rewards["pose"].params["std_standing"] = {
     r".*hip_pitch.*": 1.0,
-    r".*hip_roll.*": 0.15,
-    r".*hip_yaw.*": 0.15,
+    r".*hip_roll.*": 0.08,
+    r".*hip_yaw.*": 0.08,
     r".*knee.*": 1.0,
     r".*ankle_pitch.*": 1.0,
     r".*ankle_roll.*": 0.1,
-    r".*waist_yaw.*": 0.15,
-    r".*waist_roll.*": 0.1,
-    r".*waist_pitch.*": 0.1,
+    r".*waist_yaw.*": 0.1,
+    r".*waist_roll.*": 0.3,   # allow strong lateral lean for balance
+    r".*waist_pitch.*": 0.4,  # allow strong backward/forward lean for balance
   }
+
+  # 5) Penalize horizontal base velocity when commanded to stand still.
+  # Without this, the robot drifts forward when arms are extended (COM
+  # pulls it). This directly punishes any XY motion during stand commands.
+  cfg.rewards["stand_still_lin_vel"] = RewardTermCfg(
+    func=stand_still_lin_vel,
+    weight=-2.0,
+    params={"command_name": "twist", "command_threshold": 0.1},
+  )
+
+  # 6) Strengthen hip lateral deviation penalty for the height task —
+  # arm-induced COM shifts can tempt the policy into asymmetric leg poses.
+  cfg.rewards["hip_lateral_deviation"].weight = -10.0
 
   return cfg
