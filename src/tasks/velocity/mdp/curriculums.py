@@ -95,7 +95,7 @@ def commands_vel(
 class StandingBalanceStage(TypedDict):
   step: int
   rel_standing_envs: float | None
-  nudge_velocity_range: tuple[float, float] | None
+  nudge_speed: float | None
 
 
 def standing_balance(
@@ -120,8 +120,8 @@ def standing_balance(
     if env.common_step_counter > stage["step"]:
       if stage.get("rel_standing_envs") is not None:
         cfg.rel_standing_envs = stage["rel_standing_envs"]
-      if stage.get("nudge_velocity_range") is not None:
-        nudge_cfg.params["velocity_range"] = stage["nudge_velocity_range"]
+      if stage.get("nudge_speed") is not None:
+        nudge_cfg.params["speed"] = stage["nudge_speed"]
   return {}
 
 

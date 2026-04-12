@@ -125,48 +125,82 @@ def nudge_joints_position(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | None,
   position_offset_range: tuple[float, float],
+  speed: float = 0.5,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> None:
-  """Apply random position offsets to joints and update PD targets.
+  """Smoothly move joint PD targets toward random goal positions.
 
-  Unlike ``nudge_joints_velocity`` which only perturbs velocities and lets PD
-  controllers dampen the motion, this function directly moves joints to new
-  positions (current + random offset, clamped to limits) and sets PD targets
-  to hold them there.
+  Simulates teleoperation by moving PD targets at constant *speed* (rad/s)
+  toward stored random goals. When all joints of an env reach their goal,
+  a new random goal is sampled. Call frequently (e.g. every 0.05-0.1 s).
+
+  Always operates on ALL envs regardless of *env_ids* — the interval event
+  system may pass subsets, but smooth motion requires updating every env
+  every call.
   """
-  if env_ids is None:
-    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
-  if len(env_ids) == 0:
-    return
+  # Always update all envs for smooth continuous motion.
+  all_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
 
   asset: Entity = env.scene[asset_cfg.name]
+  num_joints = len(asset_cfg.joint_ids)
+  dt = env.step_dt
 
-  joint_ids = asset_cfg.joint_ids
-  if isinstance(joint_ids, list):
-    joint_ids_t = torch.tensor(joint_ids, device=env.device, dtype=torch.long)
-  else:
-    joint_ids_t = joint_ids
+  # Debug counter.
+  call_key = "_nudge_position_calls"
+  calls = getattr(env, call_key, 0) + 1
+  setattr(env, call_key, calls)
 
-  # Current positions for the selected joints.
-  current_pos = asset.data.joint_pos[env_ids][:, asset_cfg.joint_ids]
+  # Persistent goal buffer — lazily created and stored on the env.
+  goal_key = "_nudge_position_goal"
+  goal: torch.Tensor | None = getattr(env, goal_key, None)
+  if goal is None or goal.shape != (env.num_envs, num_joints):
+    goal = torch.stack(
+      [asset.data.joint_pos_target[:, jid] for jid in asset_cfg.joint_ids], dim=-1,
+    ).clone()
+    setattr(env, goal_key, goal)
 
-  # Random offsets.
-  offsets = torch.empty_like(current_pos).uniform_(*position_offset_range)
-  new_pos = current_pos + offsets
-
-  # Clamp to joint limits.
-  limits = asset.data.soft_joint_pos_limits[env_ids][:, asset_cfg.joint_ids]
-  new_pos = torch.clamp(new_pos, limits[:, :, 0], limits[:, :, 1])
-
-  # Write new position with zero velocity (no jerking).
-  joint_vel = torch.zeros_like(new_pos)
-  asset.write_joint_state_to_sim(
-    new_pos, joint_vel, env_ids=env_ids, joint_ids=joint_ids_t,
+  # Current PD targets for the selected joints.
+  current_targets = torch.stack(
+    [asset.data.joint_pos_target[all_ids, jid] for jid in asset_cfg.joint_ids], dim=-1,
   )
 
-  # Update PD targets to hold the new position.
+  # Resample goals for envs that have reached theirs.
+  diff = goal - current_targets
+  dist = diff.abs().max(dim=-1).values
+  reached = dist < 0.01
+  n_reached = reached.sum().item()
+  if reached.any():
+    reached_ids = all_ids[reached]
+    base_pos = current_targets[reached]
+    offsets = torch.empty(
+      (len(reached_ids), num_joints), device=env.device,
+    ).uniform_(*position_offset_range)
+    new_goals = base_pos + offsets
+    limits = asset.data.soft_joint_pos_limits[reached_ids][:, asset_cfg.joint_ids]
+    goal[reached_ids] = torch.clamp(new_goals, limits[:, :, 0], limits[:, :, 1])
+    # Recompute diff for envs that got new goals.
+    diff[reached] = goal[reached_ids] - current_targets[reached]
+
+  # Move at constant speed toward goal (clamp step size).
+  max_step = speed * dt
+  step = diff.clamp(-max_step, max_step)
+  new_targets = current_targets + step
+
+  # Write PD targets for all envs.
   for i, jid in enumerate(asset_cfg.joint_ids):
-    asset.data.joint_pos_target[env_ids, jid] = new_pos[:, i]
+    asset.data.joint_pos_target[all_ids, jid] = new_targets[:, i]
+
+  # Debug print every 100 calls (env 0 only).
+  if calls % 100 == 0:
+    e0_target = current_targets[0, :3].tolist()
+    e0_goal = goal[0, :3].tolist()
+    e0_dist = dist[0].item()
+    print(
+      f"[nudge_pos] call={calls} dt={dt:.4f} max_step={max_step:.4f} "
+      f"reached={n_reached}/{env.num_envs} "
+      f"env0: target={[f'{v:.3f}' for v in e0_target]} "
+      f"goal={[f'{v:.3f}' for v in e0_goal]} dist={e0_dist:.4f}"
+    )
 
 
 def set_joint_targets_to_default(

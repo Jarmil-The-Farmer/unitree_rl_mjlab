@@ -230,10 +230,13 @@ class _JoystickViewer(_TermLoggingViewer):
     self._arm_mode_idx = self._js.get("arm_mode", 0)
     if self._arm_mode_idx != self._prev_arm_mode_idx:
       self._prev_arm_mode_idx = self._arm_mode_idx
-      self._apply_arm_mode()
+      if not self._nudge_was_on:
+        self._apply_arm_mode()
     # Re-apply arm mode every step so it persists after reset
     # (reset_arm_targets would overwrite with keyframe defaults).
-    self._apply_arm_mode()
+    # Skip when nudge is active — nudge_joints_position controls arm targets.
+    if not self._nudge_was_on:
+      self._apply_arm_mode()
     return super()._execute_step()
 
   def sync_env_to_viewer(self):

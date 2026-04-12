@@ -352,41 +352,17 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
 
-  # Periodically nudge arm joints with small random velocities. The PD
-  # controllers smoothly dampen the perturbation, producing natural gradual
-  # motion instead of instantaneous position jumps.
-  # Starts gentle — curriculum ramps up intensity later.
-  cfg.events["nudge_arms"] = EventTermCfg(
-    func=nudge_joints_velocity,
-    mode="interval",
-    interval_range_s=(1, 3),
-    params={
-      "velocity_range": (-1, 1),
-      "asset_cfg": SceneEntityCfg(
-        "robot",
-        joint_names=(
-          ".*_shoulder_pitch_joint",
-          ".*_shoulder_roll_joint",
-          ".*_shoulder_yaw_joint",
-          ".*_elbow_joint",
-          ".*_wrist_roll_joint",
-          ".*_wrist_pitch_joint",
-          ".*_wrist_yaw_joint",
-        ),
-      ),
-    },
-  )
-
-  # Periodically teleport arm joints to new random positions.
-  # Unlike nudge_arms (velocity perturbation dampened by PD), this directly
-  # moves joints and sets PD targets — instant position change.
+  # Smoothly move arm joints toward random target positions at constant speed.
+  # Called frequently — PD targets move at `speed` rad/s toward a random goal.
+  # When goal is reached, a new one is sampled. Simulates teleoperation.
   # Controlled by the same joystick toggle as nudge_arms.
   cfg.events["nudge_arms_position"] = EventTermCfg(
     func=nudge_joints_position,
     mode="interval",
-    interval_range_s=(2, 5),
+    interval_range_s=(0.05, 0.1),
     params={
-      "position_offset_range": (-0.3, 0.3),
+      "position_offset_range": (-0.5, 0.5),
+      "speed": 0.5,
       "asset_cfg": SceneEntityCfg(
         "robot",
         joint_names=(
@@ -450,12 +426,12 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     func=standing_balance,
     params={
       "command_name": "twist",
-      "nudge_event_name": "nudge_arms",
+      "nudge_event_name": "nudge_arms_position",
       "stages": [
-        {"step": 0,          "rel_standing_envs": 0.2, "nudge_velocity_range": (-1, 1)},
-        {"step": 2000 * 24,  "rel_standing_envs": 0.4, "nudge_velocity_range": (-3, 3)},
-        {"step": 4000 * 24,  "rel_standing_envs": 0.6, "nudge_velocity_range": (-5, 5)},
-        {"step": 6000 * 24,  "rel_standing_envs": 0.7, "nudge_velocity_range": (-7, 7)},
+        {"step": 0,          "rel_standing_envs": 0.2, "nudge_speed": 0.3},
+        {"step": 2000 * 24,  "rel_standing_envs": 0.4, "nudge_speed": 0.5},
+        {"step": 4000 * 24,  "rel_standing_envs": 0.6, "nudge_speed": 0.8},
+        {"step": 6000 * 24,  "rel_standing_envs": 0.7, "nudge_speed": 1.0},
       ],
     },
   )
@@ -647,7 +623,6 @@ def unitree_g1_flat_balance_standing_env_cfg(play: bool = False) -> ManagerBased
 
   # Slow nudge — arms move gently so the robot must hold each position
   # for a long time, not just survive brief transients.
-  cfg.events["nudge_arms"].params["velocity_range"] = (-0.5, 0.5)
-  cfg.events["nudge_arms"].interval_range_s = (1.0, 3.0)
+  cfg.events["nudge_arms_position"].params["speed"] = 0.3
 
   return cfg
