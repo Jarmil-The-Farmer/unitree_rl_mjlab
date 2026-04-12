@@ -121,6 +121,54 @@ def randomize_arm_pose(
     asset.data.joint_pos_target[env_ids, jid] = joint_pos[:, i]
 
 
+def nudge_joints_position(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  position_offset_range: tuple[float, float],
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+  """Apply random position offsets to joints and update PD targets.
+
+  Unlike ``nudge_joints_velocity`` which only perturbs velocities and lets PD
+  controllers dampen the motion, this function directly moves joints to new
+  positions (current + random offset, clamped to limits) and sets PD targets
+  to hold them there.
+  """
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+  if len(env_ids) == 0:
+    return
+
+  asset: Entity = env.scene[asset_cfg.name]
+
+  joint_ids = asset_cfg.joint_ids
+  if isinstance(joint_ids, list):
+    joint_ids_t = torch.tensor(joint_ids, device=env.device, dtype=torch.long)
+  else:
+    joint_ids_t = joint_ids
+
+  # Current positions for the selected joints.
+  current_pos = asset.data.joint_pos[env_ids][:, asset_cfg.joint_ids]
+
+  # Random offsets.
+  offsets = torch.empty_like(current_pos).uniform_(*position_offset_range)
+  new_pos = current_pos + offsets
+
+  # Clamp to joint limits.
+  limits = asset.data.soft_joint_pos_limits[env_ids][:, asset_cfg.joint_ids]
+  new_pos = torch.clamp(new_pos, limits[:, :, 0], limits[:, :, 1])
+
+  # Write new position with zero velocity (no jerking).
+  joint_vel = torch.zeros_like(new_pos)
+  asset.write_joint_state_to_sim(
+    new_pos, joint_vel, env_ids=env_ids, joint_ids=joint_ids_t,
+  )
+
+  # Update PD targets to hold the new position.
+  for i, jid in enumerate(asset_cfg.joint_ids):
+    asset.data.joint_pos_target[env_ids, jid] = new_pos[:, i]
+
+
 def set_joint_targets_to_default(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | None,

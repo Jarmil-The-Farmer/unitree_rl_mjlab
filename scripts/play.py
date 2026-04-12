@@ -174,11 +174,11 @@ _ARM_MODES = [
 class _JoystickViewer(_TermLoggingViewer):
   """NativeMujocoViewer with joystick HUD overlay and arm nudge event toggle."""
 
-  def __init__(self, env, policy, *, js_state, cmd_term, nudge_event_idx, has_height=False, **kwargs):
+  def __init__(self, env, policy, *, js_state, cmd_term, nudge_event_indices, has_height=False, **kwargs):
     super().__init__(env, policy, **kwargs)
     self._js = js_state
     self._cmd_term = cmd_term
-    self._nudge_idx = nudge_event_idx
+    self._nudge_indices = nudge_event_indices
     self._nudge_was_on = False
     self._has_height = has_height
     self._arm_mode_idx = 0
@@ -191,10 +191,11 @@ class _JoystickViewer(_TermLoggingViewer):
     self._arm_elbow_ids = [
       i for i, n in enumerate(robot.joint_names) if "elbow" in n and "wrist" not in n
     ]
-    # Disable nudge event initially (set timer to large value).
-    if self._nudge_idx is not None:
+    # Disable nudge events initially (set timer to large value).
+    if self._nudge_indices:
       em = self.env.unwrapped.event_manager
-      em._interval_term_time_left[self._nudge_idx][:] = 1e9
+      for idx in self._nudge_indices:
+        em._interval_term_time_left[idx][:] = 1e9
 
   def _apply_arm_mode(self):
     """Write arm PD targets for the active arm mode.
@@ -214,16 +215,17 @@ class _JoystickViewer(_TermLoggingViewer):
       robot.data.joint_pos_target[:, idx] = el
 
   def _execute_step(self) -> bool:
-    # Toggle nudge_arms event via event manager interval timer.
-    if self._nudge_idx is not None:
+    # Toggle nudge_arms events via event manager interval timer.
+    if self._nudge_indices:
       nudge_on = self._js["nudge_arms"]
       if nudge_on != self._nudge_was_on:
         self._nudge_was_on = nudge_on
         em = self.env.unwrapped.event_manager
-        if nudge_on:
-          em._interval_term_time_left[self._nudge_idx][:] = 0.0
-        else:
-          em._interval_term_time_left[self._nudge_idx][:] = 1e9
+        for idx in self._nudge_indices:
+          if nudge_on:
+            em._interval_term_time_left[idx][:] = 0.0
+          else:
+            em._interval_term_time_left[idx][:] = 1e9
     # Cycle arm mode on button press.
     self._arm_mode_idx = self._js.get("arm_mode", 0)
     if self._arm_mode_idx != self._prev_arm_mode_idx:
@@ -462,18 +464,20 @@ def run_play(task_id: str, cfg: PlayConfig):
       }
       _prev_arm_btn = False
 
-      # Find nudge_arms event index in the event manager's interval terms.
-      nudge_event_idx = None
+      # Find nudge_arms* event indices in the event manager's interval terms.
+      nudge_event_indices = []
       try:
         em = env.unwrapped.event_manager
         interval_names = em.active_terms.get("interval", [])
-        if "nudge_arms" in interval_names:
-          nudge_event_idx = interval_names.index("nudge_arms")
-          print(f"[Joystick] nudge_arms event found (index {nudge_event_idx})")
-        else:
-          print("[Joystick] nudge_arms event not registered in config")
+        for nudge_name in ("nudge_arms", "nudge_arms_position"):
+          if nudge_name in interval_names:
+            idx = interval_names.index(nudge_name)
+            nudge_event_indices.append(idx)
+            print(f"[Joystick] {nudge_name} event found (index {idx})")
+        if not nudge_event_indices:
+          print("[Joystick] No nudge_arms events registered in config")
       except Exception as e:
-        print(f"[Joystick] Could not find nudge_arms event: {e}")
+        print(f"[Joystick] Could not find nudge_arms events: {e}")
 
       # Detect height-aware command (4D command vector).
       from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
@@ -566,7 +570,7 @@ def run_play(task_id: str, cfg: PlayConfig):
       t = threading.Thread(target=_joystick_loop, daemon=True)
       t.start()
       _js_viewer_kwargs = dict(
-        js_state=js_state, cmd_term=cmd_term, nudge_event_idx=nudge_event_idx,
+        js_state=js_state, cmd_term=cmd_term, nudge_event_indices=nudge_event_indices,
         has_height=has_height,
       )
     except Exception as e:

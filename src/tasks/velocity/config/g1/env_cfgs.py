@@ -16,7 +16,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
 from src.tasks.velocity.mdp.curriculums import arm_pose_randomization_curriculum, standing_balance
-from src.tasks.velocity.mdp.events import nudge_joints_velocity, randomize_arm_pose
+from src.tasks.velocity.mdp.events import nudge_joints_position, nudge_joints_velocity, randomize_arm_pose
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
 from src.tasks.velocity.mdp.rewards import joint_deviation_l2, stand_still_lin_vel, track_base_height, track_linear_velocity_no_z
@@ -359,9 +359,34 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.events["nudge_arms"] = EventTermCfg(
     func=nudge_joints_velocity,
     mode="interval",
-    interval_range_s=(0.2, 1),
+    interval_range_s=(1, 3),
     params={
       "velocity_range": (-1, 1),
+      "asset_cfg": SceneEntityCfg(
+        "robot",
+        joint_names=(
+          ".*_shoulder_pitch_joint",
+          ".*_shoulder_roll_joint",
+          ".*_shoulder_yaw_joint",
+          ".*_elbow_joint",
+          ".*_wrist_roll_joint",
+          ".*_wrist_pitch_joint",
+          ".*_wrist_yaw_joint",
+        ),
+      ),
+    },
+  )
+
+  # Periodically teleport arm joints to new random positions.
+  # Unlike nudge_arms (velocity perturbation dampened by PD), this directly
+  # moves joints and sets PD targets — instant position change.
+  # Controlled by the same joystick toggle as nudge_arms.
+  cfg.events["nudge_arms_position"] = EventTermCfg(
+    func=nudge_joints_position,
+    mode="interval",
+    interval_range_s=(2, 5),
+    params={
+      "position_offset_range": (-0.3, 0.3),
       "asset_cfg": SceneEntityCfg(
         "robot",
         joint_names=(
