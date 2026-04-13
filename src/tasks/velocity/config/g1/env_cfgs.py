@@ -539,6 +539,13 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
   # 8) Add shoulder_roll randomization to prevent arm crossing.
   cfg.events["randomize_arm_pose"].params["shoulder_roll_range"] = (0.2, 0.8)
 
+  if play:
+    twist_cmd = cfg.commands["twist"]
+    assert isinstance(twist_cmd, UniformVelocityHeightCommandCfg)
+    twist_cmd.ranges.lin_vel_x = (-0.3, 0.5)
+    twist_cmd.ranges.lin_vel_y = (-0.3, 0.3)
+    twist_cmd.ranges.ang_vel_z = (-0.4, 0.4)
+
   return cfg
 
 
