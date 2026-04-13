@@ -488,7 +488,9 @@ def run_play(task_id: str, cfg: PlayConfig):
       if has_height:
         height_min, height_max = cmd_term.cfg.ranges.base_height
         height_default = cmd_term.cfg.default_height
-        height_half = (height_max - height_min) / 2.0
+        # ry=0 → default_height, ry=-1 → height_min, ry=+1 → height_max
+        height_range_down = height_default - height_min  # how far stick-down can go
+        height_range_up = height_max - height_default    # how far stick-up can go
 
       print("[Joystick] Controls:")
       print("  Left stick     : move (lin_vel_x / lin_vel_y)")
@@ -555,7 +557,10 @@ def run_play(task_id: str, cfg: PlayConfig):
 
             # Map right stick Y to target height for height-aware tasks.
             if has_height:
-              cmd_term.vel_command_b[:, 3] = height_default + ry * height_half
+              if ry < 0:
+                cmd_term.vel_command_b[:, 3] = height_default + ry * height_range_down
+              else:
+                cmd_term.vel_command_b[:, 3] = height_default + ry * height_range_up
 
             cmd_term.is_standing_env[:] = False
             cmd_term.is_heading_env[:] = False

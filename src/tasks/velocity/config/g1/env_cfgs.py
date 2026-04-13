@@ -436,19 +436,19 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
 
-  # Curriculum: arm pose randomization range.
-  # Faster ramp so robot gets more training time with fully extended arms.
-  cfg.curriculum["arm_pose_range"] = CurriculumTermCfg(
-    func=arm_pose_randomization_curriculum,
-    params={
-      "reset_event_name": "randomize_arm_pose",
-      "stages": [
-        {"step": 0,          "shoulder_pitch_range": (-0.5, 0.0), "elbow_range": (0.0, 0.5)},
-        {"step": 1500 * 24,  "shoulder_pitch_range": (-1.0, 0.0), "elbow_range": (0.0, 1.0)},
-        {"step": 3000 * 24,  "shoulder_pitch_range": (-1.6, 0.0), "elbow_range": (0.0, 1.57)},
-      ],
-    },
-  )
+  # # Curriculum: arm pose randomization range.
+  # # Disabled — nudge_arms_position handles continuous arm motion during training.
+  # cfg.curriculum["arm_pose_range"] = CurriculumTermCfg(
+  #   func=arm_pose_randomization_curriculum,
+  #   params={
+  #     "reset_event_name": "randomize_arm_pose",
+  #     "stages": [
+  #       {"step": 0,          "shoulder_pitch_range": (-0.5, 0.0), "elbow_range": (0.0, 0.5)},
+  #       {"step": 1500 * 24,  "shoulder_pitch_range": (-1.0, 0.0), "elbow_range": (0.0, 1.0)},
+  #       {"step": 3000 * 24,  "shoulder_pitch_range": (-1.6, 0.0), "elbow_range": (0.0, 1.57)},
+  #     ],
+  #   },
+  # )
 
   return cfg
 
@@ -483,7 +483,7 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
       lin_vel_y=old_twist.ranges.lin_vel_y,
       ang_vel_z=old_twist.ranges.ang_vel_z,
       heading=old_twist.ranges.heading,
-      base_height=(0.45, 0.78),
+      base_height=(0.35, 0.78),
     ),
     viz=UniformVelocityCommandCfg.VizCfg(z_offset=1.15),
   )
