@@ -135,15 +135,19 @@ REGISTER_OBSERVATION(velocity_height_commands)
     obs[2] = std::clamp(-joystick->rx(), ranges["ang_vel_z"][0].as<float>(), ranges["ang_vel_z"][1].as<float>());
     
     float default_height = cfg["default_height"].as<float>();
-    
-    //height_half = (height_max - height_min) / 2.0
-    
     float min_height = ranges["base_height"][0].as<float>();
     float max_height = ranges["base_height"][1].as<float>();
-    float height_half = (max_height - min_height) / 2.0f;
 
-    float height = default_height + joystick->ry() * height_half;
-    
+    // Asymmetric mapping matching play.py: stick-down gets full range
+    // to min, stick-up gets full range to max.
+    float ry = joystick->ry();
+    float height;
+    if (ry < 0) {
+        height = default_height + ry * (default_height - min_height);
+    } else {
+        height = default_height + ry * (max_height - default_height);
+    }
+
     obs[3] = std::clamp(height, min_height, max_height);
 
     return obs;
