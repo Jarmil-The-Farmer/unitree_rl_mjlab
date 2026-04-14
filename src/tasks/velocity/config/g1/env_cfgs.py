@@ -345,9 +345,9 @@ def unitree_g1_flat_balance_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     func=randomize_arm_pose,
     mode="reset",
     params={
-      "shoulder_pitch_range": (-0.3, 0.0),
-      "elbow_range": (0.0, 0.3),
-      "shoulder_roll_range": (0.2, 0.8),
+      "shoulder_pitch_range": (-1.6, 0.0),
+      "elbow_range": (0.0, 1.57),
+      "shoulder_roll_range": (0.0, 0.8),
       "asset_cfg": SceneEntityCfg("robot", joint_names=_arm_joint_names),
     },
   )
@@ -464,6 +464,8 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
   import math
 
   cfg = unitree_g1_flat_balance_env_cfg(play=play)
+
+  cfg.episode_length_s = 30.0
 
   # Replace the velocity command with the height-aware variant.
   # Preserve the existing velocity ranges and settings.

@@ -18,6 +18,9 @@ def unitree_g1_balance_height_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create RL runner configuration for Unitree G1 balance + height control task."""
   cfg = unitree_g1_ppo_runner_cfg()
   cfg.experiment_name = "g1_balance_height_velocity"
+  cfg.actor.hidden_dims = (512, 512, 256)
+  cfg.critic.hidden_dims = (512, 512, 256)
+  cfg.max_iterations = 25001
   return cfg
 
 
