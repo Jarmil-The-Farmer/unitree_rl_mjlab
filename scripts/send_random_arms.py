@@ -5,9 +5,14 @@ Modes (cycle with 'm'):
   zero    — all arm joints at 0
   forward — arms forward (-1.6, 0, 0, 1.57, 0, 0, 0)
 
+Limb selection (cycle with 'l'/'r'/'b', default 'both'):
+  l — left arm only
+  r — right arm only
+  b — both arms
+
 In zero/forward modes, select a joint then adjust with +/-:
   s — select shoulder_pitch
-  r — select shoulder_roll (abduction)
+  shift+r — select shoulder_roll (abduction)
   e — select elbow
   +/= — increase selected joint by step
   -   — decrease selected joint by step
@@ -70,9 +75,12 @@ JOINT_LIMITS = JOINT_LIMITS_LEFT + JOINT_LIMITS_RIGHT
 # (shoulder_roll limits are mirrored: left +roll = abduction, right -roll = abduction)
 JOINTS = {
     "s": {"name": "shoulder_pitch", "idx": 0, "mirror": False},
-    "r": {"name": "shoulder_roll",  "idx": 1, "mirror": True},
+    "R": {"name": "shoulder_roll",  "idx": 1, "mirror": True},
     "e": {"name": "elbow",          "idx": 3, "mirror": False},
 }
+
+# ── Limb modes ──────────────────────────────────────────────────────────
+LIMB_MODES = ["both", "left", "right"]
 
 # ── Mode presets ─────────────────────────────────────────────────────────
 ZERO_POS = [0.0] * 14
@@ -107,14 +115,15 @@ def base_for_mode(mode: str) -> list[float]:
 
 
 def print_status(mode: str, selected: str | None, goal: list[float],
-                 positions: list[float]) -> None:
+                 positions: list[float], limb_mode: str = "both") -> None:
     sel_str = JOINTS[selected]["name"] if selected else "none"
     # Show goal values for selected joint (left + right).
     if selected and mode != "random":
         idx = JOINTS[selected]["idx"]
         sel_str += f" (goal L={goal[idx]:+.2f} R={goal[7 + idx]:+.2f})"
+    limb_str = f"[limbs: {limb_mode}]"
     print(
-        f"\r[mode={mode}] [joint: {sel_str}] "
+        f"\r[mode={mode}] {limb_str} [joint: {sel_str}] "
         f"L:[{', '.join(f'{p:+.2f}' for p in positions[:7])}] "
         f"R:[{', '.join(f'{p:+.2f}' for p in positions[7:])}]"
         "          ",
@@ -139,6 +148,7 @@ def main() -> None:
 
     mode_idx = 1  # start in "zero" mode
     mode = MODES[mode_idx]
+    limb_mode = "both"  # default: both arms
     positions = list(ZERO_POS)
     goal = list(ZERO_POS)
     random_goal = list(ZERO_POS)
@@ -146,7 +156,8 @@ def main() -> None:
 
     print(f"Arm LCM controller @ {args.hz} Hz")
     print(f"  m     = cycle mode ({', '.join(MODES)})")
-    print(f"  s/r/e = select shoulder_pitch / shoulder_roll / elbow")
+    print(f"  l/r/b = cycle limbs (left/right/both) [default: both]")
+    print(f"  s/R/e = select shoulder_pitch / shoulder_roll / elbow")
     print(f"  +/-   = adjust selected joint by {args.step:.2f} rad")
     print(f"  0     = reset selected joint to mode default")
     print(f"  Ctrl+C = quit\n")
@@ -170,6 +181,15 @@ def main() -> None:
                 else:
                     goal = list(base_for_mode(mode))
                 print(f"\r\n>> Mode: {mode}          \r\n", end="", flush=True)
+            elif key == "l":
+                limb_mode = "left"
+                print(f"\r\n>> Limbs: {limb_mode}          \r\n", end="", flush=True)
+            elif key == "r":
+                limb_mode = "right"
+                print(f"\r\n>> Limbs: {limb_mode}          \r\n", end="", flush=True)
+            elif key == "b":
+                limb_mode = "both"
+                print(f"\r\n>> Limbs: {limb_mode}          \r\n", end="", flush=True)
             elif key in JOINTS and mode != "random":
                 selected = key
                 jname = JOINTS[key]["name"]
@@ -186,8 +206,10 @@ def main() -> None:
                 sign_l, sign_r = 1, (-1 if jcfg["mirror"] else 1)
                 lo_l, hi_l = JOINT_LIMITS[idx]
                 lo_r, hi_r = JOINT_LIMITS[7 + idx]
-                goal[idx] = clamp(goal[idx] + sign_l * args.step, lo_l, hi_l)
-                goal[7 + idx] = clamp(goal[7 + idx] + sign_r * args.step, lo_r, hi_r)
+                if limb_mode in ("left", "both"):
+                    goal[idx] = clamp(goal[idx] + sign_l * args.step, lo_l, hi_l)
+                if limb_mode in ("right", "both"):
+                    goal[7 + idx] = clamp(goal[7 + idx] + sign_r * args.step, lo_r, hi_r)
                 print(
                     f"\r\n>> {jcfg['name']} +step "
                     f"-> L={goal[idx]:+.2f} R={goal[7 + idx]:+.2f}"
@@ -200,8 +222,10 @@ def main() -> None:
                 sign_l, sign_r = 1, (-1 if jcfg["mirror"] else 1)
                 lo_l, hi_l = JOINT_LIMITS[idx]
                 lo_r, hi_r = JOINT_LIMITS[7 + idx]
-                goal[idx] = clamp(goal[idx] - sign_l * args.step, lo_l, hi_l)
-                goal[7 + idx] = clamp(goal[7 + idx] - sign_r * args.step, lo_r, hi_r)
+                if limb_mode in ("left", "both"):
+                    goal[idx] = clamp(goal[idx] - sign_l * args.step, lo_l, hi_l)
+                if limb_mode in ("right", "both"):
+                    goal[7 + idx] = clamp(goal[7 + idx] - sign_r * args.step, lo_r, hi_r)
                 print(
                     f"\r\n>> {jcfg['name']} -step "
                     f"-> L={goal[idx]:+.2f} R={goal[7 + idx]:+.2f}"
@@ -211,8 +235,10 @@ def main() -> None:
             elif key == "0" and selected and mode != "random":
                 idx = JOINTS[selected]["idx"]
                 base = base_for_mode(mode)
-                goal[idx] = base[idx]
-                goal[7 + idx] = base[7 + idx]
+                if limb_mode in ("left", "both"):
+                    goal[idx] = base[idx]
+                if limb_mode in ("right", "both"):
+                    goal[7 + idx] = base[7 + idx]
                 jname = JOINTS[selected]["name"]
                 print(
                     f"\r\n>> {jname} reset "
@@ -244,7 +270,7 @@ def main() -> None:
 
             step += 1
             if step % int(args.hz) == 0:
-                print_status(mode, selected, goal, positions)
+                print_status(mode, selected, goal, positions, limb_mode)
 
             time.sleep(dt)
 

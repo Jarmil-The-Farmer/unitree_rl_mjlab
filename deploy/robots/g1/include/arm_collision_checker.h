@@ -191,6 +191,7 @@ public:
                              const float* imu_quat = nullptr,
                              bool collision_active = false) {
 #ifdef WITH_COLLISION_RENDER
+        if (!render_running_) return;
         {
             std::lock_guard<std::mutex> lock(render_mutex_);
             if (fj_qposadr_ >= 0) {

@@ -135,6 +135,7 @@
             <inertial pos="0.00203158 0.000339683 0.184568" quat="0.999803 -6.03319e-05 0.0198256 0.00131986" mass="7.818" diaginertia="0.121847 0.109825 0.0273735"/>
             <joint name="waist_pitch_joint" axis="0 1 0" range="-0.52 0.52"/>
             <geom name="torso_collision" class="torso_col" size="0.09" fromto="0.01 0 0.08 0.01 0 0.2"/>
+            <geom name="neck_collision" class="torso_col" size="0.05" fromto="0 0 0.2 0 0 0.38"/>
             <geom name="head_collision" class="torso_col" type="sphere" size="0.06" pos="0 0 0.43"/>
 
             <!-- ══ LEFT ARM ══ -->
