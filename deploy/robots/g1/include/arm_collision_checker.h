@@ -22,7 +22,7 @@
 constexpr int G1_NUM_MOTORS = 29;
 constexpr int G1_ARM_START = 15;        // first arm motor index
 constexpr int G1_NUM_ARM_MOTORS = 14;   // 7 per arm
-constexpr int COLLISION_BISECT_ITERS = 4;
+constexpr int G1_JOINTS_PER_ARM = 7;
 
 // Joint names in hardware motor index order (0-28).
 static const char* const G1_JOINT_NAMES[G1_NUM_MOTORS] = {
@@ -126,40 +126,63 @@ public:
         if (model_)      { mj_deleteModel(model_); model_ = nullptr; }
     }
 
-    /// Check if desired arm positions collide with the body.
-    /// @param motor_pos  All 29 motor positions from lowstate (float).
-    /// @param arm_pos    14 desired arm positions from LCM (double).
-    /// @param imu_quat   IMU quaternion [w,x,y,z] (float, may be nullptr).
-    /// @return true if any arm geom is in contact.
-    bool check(const float* motor_pos, const double* arm_pos,
-               const float* imu_quat = nullptr) {
-        set_positions(motor_pos, arm_pos, imu_quat);
+    /// Resolve arm collisions per-joint, proximal to distal.
+    /// Each joint is tested independently — a blocked shoulder doesn't freeze
+    /// the elbow/wrist, and left arm doesn't affect right arm.
+    ///
+    /// @param motor_pos   All 29 motor positions from lowstate (float).
+    /// @param safe_pos    Last known safe arm positions (14 doubles).
+    /// @param desired     Desired arm positions from LCM (14 doubles).
+    /// @param out         Result arm positions (14 doubles). Each joint gets
+    ///                    desired if safe, or reverts to safe_pos if it causes collision.
+    /// @param imu_quat    IMU quaternion [w,x,y,z] (float, may be nullptr).
+    /// @return true if any joint was clamped.
+    bool resolve_arms(const float* motor_pos, const double* safe_pos,
+                      const double* desired, double* out,
+                      const float* imu_quat = nullptr) {
+        // Start with all arms at safe positions and set legs/waist/freejoint.
+        set_positions(motor_pos, safe_pos, imu_quat);
+
+        // Fast path: try all desired at once.
+        for (int i = 0; i < G1_NUM_ARM_MOTORS; ++i)
+            check_data_->qpos[joint_qposadr_[G1_ARM_START + i]] = desired[i];
         mj_forward(model_, check_data_);
-        return count_arm_contacts() > 0;
-    }
 
-    /// Binary-search for the furthest safe arm position along [current_safe → desired].
-    /// Writes result into out_safe (14 doubles).
-    void find_safe_arms(const double* current_safe, const double* desired,
-                        double* out_safe,
-                        const float* motor_pos, const float* imu_quat = nullptr) {
-        double lo = 0.0, hi = 1.0;
-        double test[G1_NUM_ARM_MOTORS];
-
-        for (int iter = 0; iter < COLLISION_BISECT_ITERS; ++iter) {
-            double t = (lo + hi) * 0.5;
+        if (!has_arm_contacts()) {
             for (int i = 0; i < G1_NUM_ARM_MOTORS; ++i)
-                test[i] = current_safe[i] + t * (desired[i] - current_safe[i]);
-            set_positions(motor_pos, test, imu_quat);
-            mj_forward(model_, check_data_);
-            if (count_arm_contacts() > 0)
-                hi = t;
-            else
-                lo = t;
+                out[i] = desired[i];
+            return false;
         }
 
+        // Collision detected — resolve per-joint, each arm independently.
+        // Reset to safe positions.
         for (int i = 0; i < G1_NUM_ARM_MOTORS; ++i)
-            out_safe[i] = current_safe[i] + lo * (desired[i] - current_safe[i]);
+            check_data_->qpos[joint_qposadr_[G1_ARM_START + i]] = safe_pos[i];
+
+        bool any_clamped = false;
+
+        // Process left arm (joints 0-6) then right arm (joints 7-13).
+        for (int arm = 0; arm < 2; ++arm) {
+            int base = arm * G1_JOINTS_PER_ARM;  // 0 or 7
+            for (int j = 0; j < G1_JOINTS_PER_ARM; ++j) {
+                int idx = base + j;
+                double prev = check_data_->qpos[joint_qposadr_[G1_ARM_START + idx]];
+                // Try desired value for this joint.
+                check_data_->qpos[joint_qposadr_[G1_ARM_START + idx]] = desired[idx];
+                mj_forward(model_, check_data_);
+
+                if (has_arm_contacts()) {
+                    // Revert this joint to safe.
+                    check_data_->qpos[joint_qposadr_[G1_ARM_START + idx]] = prev;
+                    out[idx] = prev;
+                    any_clamped = true;
+                } else {
+                    // Accept desired.
+                    out[idx] = desired[idx];
+                }
+            }
+        }
+        return any_clamped;
     }
 
     // ── Render (optional, requires -DWITH_COLLISION_RENDER) ────────────────
@@ -261,19 +284,16 @@ private:
             check_data_->qpos[joint_qposadr_[G1_ARM_START + i]] = arm_pos[i];
     }
 
-    int count_arm_contacts() const {
-        int count = 0;
+    bool has_arm_contacts() const {
         for (int i = 0; i < check_data_->ncon; ++i) {
             int g1 = check_data_->contact[i].geom1;
             int g2 = check_data_->contact[i].geom2;
             for (int aid : arm_geom_ids_) {
-                if (aid >= 0 && (g1 == aid || g2 == aid)) {
-                    ++count;
-                    break;
-                }
+                if (aid >= 0 && (g1 == aid || g2 == aid))
+                    return true;
             }
         }
-        return count;
+        return false;
     }
 
     // ── Render internals ───────────────────────────────────────────────────

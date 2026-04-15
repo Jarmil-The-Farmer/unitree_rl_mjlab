@@ -173,7 +173,8 @@ void State_RLBase::run()
         // Apply LCM arm positions (arms stay at FixStand position until first message)
         double arm_pos[NUM_ARM_JOINTS];
         if (g_arm_receiver->get_positions(arm_pos)) {
-            // Collision check: clamp arm positions to prevent self-collision.
+            // Per-joint collision resolution: each joint is tested independently
+            // so a blocked shoulder doesn't freeze elbow/wrist, and arms are independent.
             if (g_collision_checker && !param::disable_collisions) {
                 float all_motor_pos[G1_NUM_MOTORS];
                 float imu_quat[4];
@@ -185,26 +186,43 @@ void State_RLBase::run()
                         imu_quat[i] = lowstate->msg_.imu_state().quaternion()[i];
                 }
 
-                bool colliding = g_collision_checker->check(all_motor_pos, arm_pos, imu_quat);
+                double resolved[NUM_ARM_JOINTS];
+                bool colliding = g_collision_checker->resolve_arms(
+                    all_motor_pos, last_safe_arms, arm_pos, resolved, imu_quat);
+
                 if (colliding) {
-                    g_collision_checker->find_safe_arms(
-                        last_safe_arms, arm_pos, arm_pos, all_motor_pos, imu_quat);
                     if (!was_colliding)
-                        spdlog::warn("Arm collision prevented — clamping to safe position");
+                        spdlog::warn("Arm collision — clamping affected joints");
                 } else {
-                    for (int i = 0; i < NUM_ARM_JOINTS; ++i)
-                        last_safe_arms[i] = arm_pos[i];
                     if (was_colliding)
                         spdlog::info("Arm collision cleared");
                 }
                 was_colliding = colliding;
 
-                g_collision_checker->update_render_state(all_motor_pos, imu_quat, colliding);
+                for (int i = 0; i < NUM_ARM_JOINTS; ++i) {
+                    arm_pos[i] = resolved[i];
+                    last_safe_arms[i] = resolved[i];
+                }
+
             }
 
             for (int i = 0; i < NUM_ARM_JOINTS; ++i) {
                 lowcmd->msg_.motor_cmd()[ARM_JOINT_START + i].q() = arm_pos[i];
             }
+        }
+
+        // Always update render from lowstate (even before first LCM message).
+        if (g_collision_checker) {
+            float all_motor_pos[G1_NUM_MOTORS];
+            float imu_quat[4];
+            {
+                std::lock_guard<std::mutex> lock(lowstate->mutex_);
+                for (int i = 0; i < G1_NUM_MOTORS; ++i)
+                    all_motor_pos[i] = lowstate->msg_.motor_state()[i].q();
+                for (int i = 0; i < 4; ++i)
+                    imu_quat[i] = lowstate->msg_.imu_state().quaternion()[i];
+            }
+            g_collision_checker->update_render_state(all_motor_pos, imu_quat, was_colliding);
         }
     }
 #endif

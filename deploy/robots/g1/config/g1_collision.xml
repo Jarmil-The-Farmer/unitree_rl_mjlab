@@ -18,14 +18,13 @@
   </visual>
 
   <default>
-    <!-- Left body: only RIGHT arm collides with these. -->
+    <!-- Leg/body collision: both arms can collide with these. -->
     <default class="left_body_col">
-      <geom type="capsule" contype="0" conaffinity="2" condim="1" group="0"
+      <geom type="capsule" contype="0" conaffinity="3" condim="1" group="0"
             rgba="0.35 0.5 0.7 0.6"/>
     </default>
-    <!-- Right body: only LEFT arm collides with these. -->
     <default class="right_body_col">
-      <geom type="capsule" contype="0" conaffinity="1" condim="1" group="0"
+      <geom type="capsule" contype="0" conaffinity="3" condim="1" group="0"
             rgba="0.35 0.5 0.7 0.6"/>
     </default>
     <!-- Torso/head: both arms collide. -->
