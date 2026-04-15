@@ -2,7 +2,14 @@
 #include "unitree_articulation.h"
 #include "isaaclab/envs/mdp/observations/observations.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
+#include "arm_collision_checker.h"
 #include <unordered_map>
+
+namespace {
+static std::unique_ptr<ArmCollisionChecker> g_collision_checker;
+static double last_safe_arms[G1_NUM_ARM_MOTORS] = {};
+static bool was_colliding = false;
+}
 
 #ifdef WITH_LCM_ARMS
 #include <lcm/lcm-cpp.hpp>
@@ -127,6 +134,20 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
         std::exit(1);
     }
 #endif
+
+    // Init collision checker (needed when arms are received or render requested).
+    bool need_collision = (param::receive_arms && !param::disable_collisions)
+                          || param::render_collisions;
+    if (need_collision && !g_collision_checker) {
+        g_collision_checker = std::make_unique<ArmCollisionChecker>();
+        auto xml_path = param::config_dir / "g1_collision.xml";
+        if (!g_collision_checker->init(xml_path.string())) {
+            spdlog::error("Collision checker init failed — disabling");
+            g_collision_checker.reset();
+        } else if (param::render_collisions) {
+            g_collision_checker->start_render();
+        }
+    }
 }
 
 void State_RLBase::run()
@@ -152,6 +173,35 @@ void State_RLBase::run()
         // Apply LCM arm positions (arms stay at FixStand position until first message)
         double arm_pos[NUM_ARM_JOINTS];
         if (g_arm_receiver->get_positions(arm_pos)) {
+            // Collision check: clamp arm positions to prevent self-collision.
+            if (g_collision_checker && !param::disable_collisions) {
+                float all_motor_pos[G1_NUM_MOTORS];
+                float imu_quat[4];
+                {
+                    std::lock_guard<std::mutex> lock(lowstate->mutex_);
+                    for (int i = 0; i < G1_NUM_MOTORS; ++i)
+                        all_motor_pos[i] = lowstate->msg_.motor_state()[i].q();
+                    for (int i = 0; i < 4; ++i)
+                        imu_quat[i] = lowstate->msg_.imu_state().quaternion()[i];
+                }
+
+                bool colliding = g_collision_checker->check(all_motor_pos, arm_pos, imu_quat);
+                if (colliding) {
+                    g_collision_checker->find_safe_arms(
+                        last_safe_arms, arm_pos, arm_pos, all_motor_pos, imu_quat);
+                    if (!was_colliding)
+                        spdlog::warn("Arm collision prevented — clamping to safe position");
+                } else {
+                    for (int i = 0; i < NUM_ARM_JOINTS; ++i)
+                        last_safe_arms[i] = arm_pos[i];
+                    if (was_colliding)
+                        spdlog::info("Arm collision cleared");
+                }
+                was_colliding = colliding;
+
+                g_collision_checker->update_render_state(all_motor_pos, imu_quat, colliding);
+            }
+
             for (int i = 0; i < NUM_ARM_JOINTS; ++i) {
                 lowcmd->msg_.motor_cmd()[ARM_JOINT_START + i].q() = arm_pos[i];
             }

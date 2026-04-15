@@ -4,10 +4,17 @@ project(g1_controller)
 set(CMAKE_CXX_STANDARD 17)
 
 option(WITH_LCM_ARMS "Enable LCM arm receiver (requires liblcm-dev)" ON)
+option(WITH_COLLISION_RENDER "Enable GLFW collision visualization (requires libglfw3-dev)" ON)
 
 find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(yaml-cpp REQUIRED)
 find_package(ZLIB REQUIRED)
+
+# MuJoCo (required for arm collision checking).
+set(MUJOCO_DIR "${PROJECT_SOURCE_DIR}/../../../simulate/mujoco")
+if(NOT EXISTS "${MUJOCO_DIR}/lib/libmujoco.so")
+  message(FATAL_ERROR "MuJoCo not found at ${MUJOCO_DIR}/lib/libmujoco.so")
+endif()
 
 if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
     set(ONNXRUNTIME_DIR "${PROJECT_SOURCE_DIR}/../../thirdparty/onnxruntime-linux-x64-1.22.0")
@@ -23,6 +30,7 @@ include_directories(
   ${ONNXRUNTIME_DIR}/include
   ${PROJECT_SOURCE_DIR}/../../include/
   ${PROJECT_SOURCE_DIR}/../../thirdparty/cnpy
+  ${MUJOCO_DIR}/include
 )
 
 file(GLOB CNPY_SRC ${PROJECT_SOURCE_DIR}/../../thirdparty/cnpy/*.cpp)
@@ -43,6 +51,7 @@ link_libraries(
   ${ONNXRUNTIME_DIR}/lib/libonnxruntime.so.1.22.0
   cnpy_lib
   ZLIB::ZLIB
+  ${MUJOCO_DIR}/lib/libmujoco.so
 )
 
 if(WITH_LCM_ARMS)
@@ -50,6 +59,18 @@ if(WITH_LCM_ARMS)
   message(STATUS "LCM arm receiver enabled, linking: ${LCM_LIBRARY}")
   add_definitions(-DWITH_LCM_ARMS)
   link_libraries(${LCM_LIBRARY})
+endif()
+
+if(WITH_COLLISION_RENDER)
+  find_library(GLFW_LIBRARY glfw QUIET)
+  if(GLFW_LIBRARY)
+    message(STATUS "Collision render enabled, linking: ${GLFW_LIBRARY}")
+    add_definitions(-DWITH_COLLISION_RENDER)
+    link_libraries(${GLFW_LIBRARY})
+  else()
+    message(WARNING "GLFW not found — collision render disabled (install libglfw3-dev)")
+    set(WITH_COLLISION_RENDER OFF)
+  endif()
 endif()
 
 file(GLOB_RECURSE ADD_SRC_LIST

@@ -44,6 +44,8 @@ inline std::filesystem::path proj_dir;
 inline std::filesystem::path config_dir;
 inline YAML::Node config;
 inline bool receive_arms = false;
+inline bool disable_collisions = false;
+inline bool render_collisions = false;
 
 inline std::filesystem::path get_bin_path() {
     std::vector<char> path(1024);
@@ -132,6 +134,8 @@ inline po::variables_map helper(int argc, char** argv)
         ("log", "record log file")
         ("network,n", po::value<std::string>()->default_value(""), "dds network interface")
         ("receive-arms", "receive arm joint targets via LCM (channel: arm_action)")
+        ("disable-collisions", "disable MuJoCo arm collision checking at runtime")
+        ("render-collisions", "open MuJoCo viewer showing collision capsules and contacts")
         ;
 
     po::variables_map vm;
@@ -161,6 +165,8 @@ inline po::variables_map helper(int argc, char** argv)
     }
 
     receive_arms = vm.count("receive-arms") > 0;
+    disable_collisions = vm.count("disable-collisions") > 0;
+    render_collisions = vm.count("render-collisions") > 0;
 
     return vm;
 }
