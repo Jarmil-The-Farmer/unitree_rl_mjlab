@@ -153,8 +153,12 @@ public:
         if (!has_arm_contacts()) {
             for (int i = 0; i < G1_NUM_ARM_MOTORS; ++i)
                 out[i] = desired[i];
+            last_contact_info_.clear();
             return false;
         }
+
+        // Snapshot contact info before per-joint resolution modifies state.
+        last_contact_info_ = get_contact_info();
 
         // Collision detected — resolve per-joint, each arm independently.
         // Reset to safe positions.
@@ -185,6 +189,36 @@ public:
             }
         }
         return any_clamped;
+    }
+
+    /// Return a human-readable string of current arm contact pairs (body names).
+    std::string get_contact_info() const {
+        std::string info;
+        // Collect unique body pairs.
+        std::vector<std::pair<int,int>> seen;
+        for (int i = 0; i < check_data_->ncon; ++i) {
+            int g1 = check_data_->contact[i].geom1;
+            int g2 = check_data_->contact[i].geom2;
+            bool is_arm = false;
+            for (int aid : arm_geom_ids_) {
+                if (g1 == aid || g2 == aid) { is_arm = true; break; }
+            }
+            if (!is_arm) continue;
+            int b1 = model_->geom_bodyid[g1];
+            int b2 = model_->geom_bodyid[g2];
+            if (b1 > b2) std::swap(b1, b2);
+            bool dup = false;
+            for (auto& p : seen) if (p.first == b1 && p.second == b2) { dup = true; break; }
+            if (dup) continue;
+            seen.push_back({b1, b2});
+            const char* n1 = mj_id2name(model_, mjOBJ_BODY, b1);
+            const char* n2 = mj_id2name(model_, mjOBJ_BODY, b2);
+            if (!info.empty()) info += ", ";
+            info += (n1 ? n1 : "?");
+            info += " <-> ";
+            info += (n2 ? n2 : "?");
+        }
+        return info;
     }
 
     // ── Render (optional, requires -DWITH_COLLISION_RENDER) ────────────────
@@ -250,6 +284,11 @@ private:
     std::vector<int> arm_geom_ids_;
     std::vector<int> joint_qposadr_;  // [motor_idx] → qpos index
     int fj_qposadr_ = -1;
+    std::string last_contact_info_;
+
+public:
+    const std::string& last_contacts() const { return last_contact_info_; }
+private:
 
     void reset_freejoint(mjData* d) const {
         if (fj_qposadr_ < 0) return;

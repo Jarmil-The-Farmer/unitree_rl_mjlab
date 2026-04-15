@@ -192,7 +192,7 @@ void State_RLBase::run()
 
                 if (colliding) {
                     if (!was_colliding)
-                        spdlog::warn("Arm collision — clamping affected joints");
+                        spdlog::warn("Arm collision: {}", g_collision_checker->last_contacts());
                 } else {
                     if (was_colliding)
                         spdlog::info("Arm collision cleared");

@@ -275,6 +275,7 @@
     <exclude body1="left_wrist_roll_link" body2="left_wrist_pitch_link"/>
     <exclude body1="left_wrist_pitch_link" body2="left_wrist_yaw_link"/>
     <exclude body1="left_elbow_link" body2="left_wrist_pitch_link"/>
+    <exclude body1="left_wrist_roll_link" body2="left_wrist_yaw_link"/>
     <exclude body1="right_shoulder_pitch_link" body2="right_shoulder_roll_link"/>
     <exclude body1="right_shoulder_roll_link" body2="right_shoulder_yaw_link"/>
     <exclude body1="right_shoulder_yaw_link" body2="right_elbow_link"/>
@@ -282,5 +283,6 @@
     <exclude body1="right_wrist_roll_link" body2="right_wrist_pitch_link"/>
     <exclude body1="right_wrist_pitch_link" body2="right_wrist_yaw_link"/>
     <exclude body1="right_elbow_link" body2="right_wrist_pitch_link"/>
+    <exclude body1="right_wrist_roll_link" body2="right_wrist_yaw_link"/>
   </contact>
 </mujoco>
