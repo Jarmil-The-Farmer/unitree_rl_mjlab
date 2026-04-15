@@ -62,7 +62,7 @@
     <mesh name="left_wrist_roll" file="left_wrist_roll_link.stl"/>
     <mesh name="left_wrist_pitch" file="left_wrist_pitch_link.stl"/>
     <mesh name="left_wrist_yaw" file="left_wrist_yaw_link.stl"/>
-    <mesh name="left_hand" file="left_hand.stl"/>
+    <!-- Inspire hands replaced by box geoms below -->
     <mesh name="right_shoulder_pitch" file="right_shoulder_pitch_link.stl"/>
     <mesh name="right_shoulder_roll" file="right_shoulder_roll_link.stl"/>
     <mesh name="right_shoulder_yaw" file="right_shoulder_yaw_link.stl"/>
@@ -70,7 +70,6 @@
     <mesh name="right_wrist_roll" file="right_wrist_roll_link.stl"/>
     <mesh name="right_wrist_pitch" file="right_wrist_pitch_link.stl"/>
     <mesh name="right_wrist_yaw" file="right_wrist_yaw_link.stl"/>
-    <mesh name="right_hand" file="right_hand.stl"/>
   </asset>
 
   <worldbody>
@@ -189,7 +188,9 @@
                           <inertial pos="0.0708244 0.000191745 0.00161742" quat="0.510571 0.526295 0.468078 0.493188" mass="0.254576" diaginertia="0.000646113 0.000559993 0.000147566"/>
                           <joint name="left_wrist_yaw_joint" axis="0 0 1" range="-1.61443 1.61443"/>
                           <geom class="left_arm_col" mesh="left_wrist_yaw"/>
-                          <geom name="left_hand_collision" class="left_hand_col" mesh="left_hand" pos="0.0415 0.003 0"/>
+                          <geom name="left_hand_collision" type="box" size="0.10 0.07 0.04"
+                                pos="0.15 -0.01 0" contype="1" conaffinity="0" condim="1"
+                                group="0" rgba="0.8 0.2 0.2 0.6" density="0"/>
                         </body>
                       </body>
                     </body>
@@ -227,7 +228,9 @@
                           <inertial pos="0.0708244 -0.000191745 0.00161742" quat="0.493188 0.468078 0.526295 0.510571" mass="0.254576" diaginertia="0.000646113 0.000559993 0.000147566"/>
                           <joint name="right_wrist_yaw_joint" axis="0 0 1" range="-1.61443 1.61443"/>
                           <geom class="right_arm_col" mesh="right_wrist_yaw"/>
-                          <geom name="right_hand_collision" class="right_hand_col" mesh="right_hand" pos="0.0415 -0.003 0"/>
+                          <geom name="right_hand_collision" type="box" size="0.10 0.07 0.04"
+                                pos="0.15 0.01 0" contype="2" conaffinity="0" condim="1"
+                                group="0" rgba="0.8 0.2 0.2 0.6" density="0"/>
                         </body>
                       </body>
                     </body>
