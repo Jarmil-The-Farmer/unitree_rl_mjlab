@@ -57,18 +57,14 @@ static const char* const G1_JOINT_NAMES[G1_NUM_MOTORS] = {
     "right_wrist_yaw_joint",     // 28
 };
 
-// Arm collision geom names in the MuJoCo model.
-static const char* const ARM_GEOM_NAMES[] = {
-    "left_shoulder_yaw_collision",
-    "left_elbow_yaw_collision",
-    "left_wrist_collision",
-    "left_hand_collision",
-    "right_shoulder_yaw_collision",
-    "right_elbow_yaw_collision",
-    "right_wrist_collision",
-    "right_hand_collision",
+// Arm body names — all geoms attached to these bodies are considered arm geoms.
+static const char* const ARM_BODY_NAMES[] = {
+    "left_shoulder_pitch_link", "left_shoulder_roll_link", "left_shoulder_yaw_link",
+    "left_elbow_link", "left_wrist_roll_link", "left_wrist_pitch_link", "left_wrist_yaw_link",
+    "right_shoulder_pitch_link", "right_shoulder_roll_link", "right_shoulder_yaw_link",
+    "right_elbow_link", "right_wrist_roll_link", "right_wrist_pitch_link", "right_wrist_yaw_link",
 };
-constexpr int NUM_ARM_GEOMS = 8;
+constexpr int NUM_ARM_BODIES = 14;
 
 
 class ArmCollisionChecker {
@@ -89,12 +85,18 @@ public:
         }
         check_data_ = mj_makeData(model_);
 
-        // Precompute arm geom IDs.
-        for (int i = 0; i < NUM_ARM_GEOMS; ++i) {
-            int id = mj_name2id(model_, mjOBJ_GEOM, ARM_GEOM_NAMES[i]);
-            if (id < 0)
-                spdlog::warn("ArmCollisionChecker: geom '{}' not found", ARM_GEOM_NAMES[i]);
-            arm_geom_ids_.push_back(id);
+        // Precompute arm geom IDs: collect all geoms belonging to arm bodies.
+        for (int i = 0; i < NUM_ARM_BODIES; ++i) {
+            int bid = mj_name2id(model_, mjOBJ_BODY, ARM_BODY_NAMES[i]);
+            if (bid < 0) {
+                spdlog::warn("ArmCollisionChecker: body '{}' not found", ARM_BODY_NAMES[i]);
+                continue;
+            }
+            for (int g = 0; g < model_->body_geomnum[bid]; ++g) {
+                int gid = model_->body_geomadr[bid] + g;
+                if (model_->geom_contype[gid] > 0 || model_->geom_conaffinity[gid] > 0)
+                    arm_geom_ids_.push_back(gid);
+            }
         }
 
         // Build motor-index → qpos-address mapping.
