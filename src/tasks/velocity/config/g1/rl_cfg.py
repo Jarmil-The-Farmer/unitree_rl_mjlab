@@ -31,6 +31,16 @@ def unitree_g1_balance_standing_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   return cfg
 
 
+def unitree_g1_balance_weight_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create RL runner configuration for Unitree G1 balance with payload weights."""
+  cfg = unitree_g1_ppo_runner_cfg()
+  cfg.experiment_name = "g1_balance_weight_velocity"
+  cfg.actor.hidden_dims = (512, 512, 256)
+  cfg.critic.hidden_dims = (512, 512, 256)
+  cfg.max_iterations = 25001
+  return cfg
+
+
 def unitree_g1_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create RL runner configuration for Unitree G1 velocity task."""
   return RslRlOnPolicyRunnerCfg(

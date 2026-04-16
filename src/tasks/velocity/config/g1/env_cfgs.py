@@ -3,11 +3,14 @@
 from src.assets.robots import (
   G1_ACTION_SCALE,
   G1_INSPIRE_ACTION_SCALE,
+  G1_WEIGHT_ACTION_SCALE,
   get_g1_robot_cfg,
   get_g1_inspire_balance_robot_cfg,
+  get_g1_weight_robot_cfg,
 )
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
+from mjlab.envs.mdp import dr
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
@@ -669,5 +672,69 @@ def unitree_g1_flat_balance_standing_env_cfg(play: bool = False) -> ManagerBased
   # Slow nudge — arms move gently so the robot must hold each position
   # for a long time, not just survive brief transients.
   cfg.events["nudge_arms_position"].params["speed"] = 0.3
+
+  return cfg
+
+
+def unitree_g1_flat_balance_weight_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Unitree G1 balance configuration with configurable payload weights.
+
+  Based on Unitree-G1-Flat-Balance-Height but replaces the Inspire Hands
+  end effectors with three weight boxes:
+
+  - ``left_hand_weight`` / ``right_hand_weight``: 10x10x10 cm boxes mounted
+    at each wrist. Mass is randomized per-episode on reset, in [0, 4] kg
+    (independently for left and right — simulates picking up different
+    objects in each hand).
+  - ``back_weight``: 10x20x20 cm backpack box mounted on the torso.
+    Mass is randomized once at startup in [0, 8] kg and stays fixed per env
+    (static load).
+
+  The 29-DoF G1 model is used (no fingers). Arms are still randomized and
+  nudged exactly like in the balance_height task, so the policy sees a wide
+  distribution of arm poses under variable payload.
+  """
+  cfg = unitree_g1_flat_balance_height_env_cfg(play=play)
+
+  # Swap to the weight-augmented G1 model (no fingers, with payload boxes).
+  cfg.scene.entities = {"robot": get_g1_weight_robot_cfg()}
+
+  # Re-derive the leg/waist action scale from the 29-DoF scale dict (the
+  # balance parent used G1_INSPIRE_ACTION_SCALE which contains finger
+  # patterns that don't exist in this model).
+  _balance_action_scale = {
+    k: v for k, v in G1_WEIGHT_ACTION_SCALE.items()
+    if not any(arm in k for arm in ("shoulder", "elbow", "wrist"))
+  }
+  joint_pos_action = cfg.actions["joint_pos"]
+  assert isinstance(joint_pos_action, JointPositionActionCfg)
+  joint_pos_action.scale = _balance_action_scale
+
+  # --- Payload mass randomization. ---
+  # Hand weights: resample on every episode reset to simulate the robot
+  # picking up / putting down different objects. Range: 0-4 kg per hand,
+  # left and right drawn independently.
+  cfg.events["randomize_hand_weights"] = EventTermCfg(
+    mode="reset",
+    func=dr.body_mass,
+    params={
+      "asset_cfg": SceneEntityCfg(
+        "robot", body_names=("left_hand_weight", "right_hand_weight"),
+      ),
+      "operation": "abs",
+      "ranges": (0.0, 4.0),
+    },
+  )
+  # Back weight: sampled once per env at startup, held constant for that
+  # env's lifetime (static load, e.g. a fixed backpack). Range: 0-8 kg.
+  cfg.events["randomize_back_weight"] = EventTermCfg(
+    mode="startup",
+    func=dr.body_mass,
+    params={
+      "asset_cfg": SceneEntityCfg("robot", body_names=("back_weight",)),
+      "operation": "abs",
+      "ranges": (0.0, 8.0),
+    },
+  )
 
   return cfg
