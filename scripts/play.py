@@ -2,7 +2,11 @@
 
 import math
 import os
+import select
 import sys
+import termios
+import threading
+import tty
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -154,10 +158,205 @@ def _log_terminations(env):
       print(r)
 
 
+class _WeightController:
+  """Console keyboard controller for payload masses in balance_weight task.
+
+  Reads single keys from stdin (raw mode) in a background thread and lets
+  the user select which weight box (left hand / right hand / back) to
+  edit, then increment or decrement its mass. The main step loop calls
+  :meth:`apply` every step, which overwrites the sim ``body_mass`` tensor
+  with the user-set values so that randomization events cannot drift the
+  masses back on reset.
+  """
+
+  _LABELS = {
+    "left_hand_weight": "L-hand",
+    "right_hand_weight": "R-hand",
+    "back_weight": "Back",
+  }
+  _MAX_MASS = {
+    "left_hand_weight": 8.0,
+    "right_hand_weight": 8.0,
+    "back_weight": 16.0,
+  }
+
+  def __init__(self, env, step_size: float = 0.25):
+    self._env = env
+    unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
+    self._sim = unwrapped.sim
+    self._sim_model = unwrapped.sim.model
+    asset = unwrapped.scene["robot"]
+
+    # Build body-name -> sim-global index map (same for every env).
+    self._body_to_idx: dict[str, int] = {}
+    for name in self._LABELS:
+      if name not in asset.body_names:
+        raise RuntimeError(f"Weight body '{name}' not found in robot")
+      local = asset.body_names.index(name)
+      self._body_to_idx[name] = int(asset.indexing.body_ids[local].item())
+
+    # Current user-set mass for each body (initial: whatever is in sim now).
+    self._masses: dict[str, float] = {
+      n: float(self._sim_model.body_mass[:, i].mean().item())
+      for n, i in self._body_to_idx.items()
+    }
+    self._selected: str = "left_hand_weight"
+    self._step = step_size
+    self._dirty = True  # force apply + recompute on first step
+
+    self._running = True
+    self._tty_restore = None
+    self._thread: threading.Thread | None = None
+
+  # Public API ------------------------------------------------------------
+
+  def start(self) -> None:
+    """Start the background stdin reader. Silently no-ops if no TTY."""
+    if not sys.stdin.isatty():
+      print(
+        "[Weights] stdin is not a TTY — keyboard control disabled. "
+        "Masses will stay at their randomized values."
+      )
+      return
+    try:
+      self._tty_restore = termios.tcgetattr(sys.stdin.fileno())
+      tty.setcbreak(sys.stdin.fileno())
+    except Exception as e:
+      print(f"[Weights] Failed to enter raw tty mode: {e}")
+      return
+    self._thread = threading.Thread(target=self._stdin_loop, daemon=True)
+    self._thread.start()
+    self._print_help()
+    self._print_status()
+
+  def stop(self) -> None:
+    self._running = False
+    if self._tty_restore is not None:
+      try:
+        termios.tcsetattr(
+          sys.stdin.fileno(), termios.TCSADRAIN, self._tty_restore
+        )
+      except Exception:
+        pass
+      self._tty_restore = None
+
+  def apply(self) -> None:
+    """Called every viewer step from the main thread.
+
+    Always writes the user-set masses to ``sim.model.body_mass`` so that
+    reset-time randomization events cannot drift values. Recomputes
+    constants only when a value actually changed (cheap-ish but nontrivial).
+    """
+    for name, idx in self._body_to_idx.items():
+      self._sim_model.body_mass[:, idx] = self._masses[name]
+    if self._dirty:
+      self._dirty = False
+      try:
+        # Import locally — avoids importing at module top if mjlab version
+        # doesn't expose the symbol.
+        from mjlab.managers.event_manager import RecomputeLevel
+        self._sim.recompute_constants(RecomputeLevel.set_const)
+      except Exception as e:
+        print(f"[Weights] recompute_constants failed: {e}")
+
+  # Private ---------------------------------------------------------------
+
+  def _print_help(self) -> None:
+    print(
+      "\n[Weights] Controls:\n"
+      "  l / r / b       select Left / Right hand / Back weight\n"
+      "  + / =           increase selected by step\n"
+      "  -               decrease selected by step\n"
+      "  0               zero selected\n"
+      "  [ / ]           halve / double step size\n"
+      "  a               set all to zero\n"
+      "  p               print current masses\n"
+      "  ?               this help\n"
+    )
+
+  def _print_status(self) -> None:
+    parts = []
+    for name in self._LABELS:
+      lbl = self._LABELS[name]
+      v = self._masses[name]
+      marker = "*" if name == self._selected else " "
+      parts.append(f"{marker}{lbl}={v:5.2f}kg")
+    print(f"[Weights] step={self._step:.2f}kg  " + "  ".join(parts))
+
+  def _clamp(self, name: str, value: float) -> float:
+    return max(0.0, min(self._MAX_MASS[name], value))
+
+  def _adjust(self, delta: float) -> None:
+    n = self._selected
+    new = self._clamp(n, self._masses[n] + delta)
+    if new != self._masses[n]:
+      self._masses[n] = new
+      self._dirty = True
+    self._print_status()
+
+  def _set(self, name: str, value: float) -> None:
+    new = self._clamp(name, value)
+    if new != self._masses[name]:
+      self._masses[name] = new
+      self._dirty = True
+    self._print_status()
+
+  def _stdin_loop(self) -> None:
+    fd = sys.stdin.fileno()
+    while self._running:
+      try:
+        r, _, _ = select.select([fd], [], [], 0.1)
+      except Exception:
+        break
+      if not r:
+        continue
+      try:
+        ch = sys.stdin.read(1)
+      except Exception:
+        break
+      if not ch:
+        continue
+      if ch in ("l", "L"):
+        self._selected = "left_hand_weight"
+        self._print_status()
+      elif ch in ("r", "R"):
+        self._selected = "right_hand_weight"
+        self._print_status()
+      elif ch in ("b", "B"):
+        self._selected = "back_weight"
+        self._print_status()
+      elif ch in ("+", "="):
+        self._adjust(+self._step)
+      elif ch == "-":
+        self._adjust(-self._step)
+      elif ch == "0":
+        self._set(self._selected, 0.0)
+      elif ch == "a":
+        for n in self._LABELS:
+          self._set(n, 0.0)
+      elif ch == "[":
+        self._step = max(0.05, self._step / 2)
+        self._print_status()
+      elif ch == "]":
+        self._step = min(4.0, self._step * 2)
+        self._print_status()
+      elif ch == "p":
+        self._print_status()
+      elif ch == "?":
+        self._print_help()
+      # Ignore all other keys (including Ctrl-C — handled by main thread).
+
+
 class _TermLoggingViewer(NativeMujocoViewer):
   """NativeMujocoViewer that prints termination reasons to console."""
 
+  def __init__(self, env, policy, *, weight_ctrl: _WeightController | None = None, **kwargs):
+    super().__init__(env, policy, **kwargs)
+    self._weight_ctrl = weight_ctrl
+
   def _execute_step(self) -> bool:
+    if self._weight_ctrl is not None:
+      self._weight_ctrl.apply()
     result = super()._execute_step()
     if result:
       _log_terminations(self.env)
@@ -174,8 +373,8 @@ _ARM_MODES = [
 class _JoystickViewer(_TermLoggingViewer):
   """NativeMujocoViewer with joystick HUD overlay and arm nudge event toggle."""
 
-  def __init__(self, env, policy, *, js_state, cmd_term, nudge_event_indices, has_height=False, **kwargs):
-    super().__init__(env, policy, **kwargs)
+  def __init__(self, env, policy, *, js_state, cmd_term, nudge_event_indices, has_height=False, weight_ctrl: _WeightController | None = None, **kwargs):
+    super().__init__(env, policy, weight_ctrl=weight_ctrl, **kwargs)
     self._js = js_state
     self._cmd_term = cmd_term
     self._nudge_indices = nudge_event_indices
@@ -402,6 +601,18 @@ def run_play(task_id: str, cfg: PlayConfig):
     print(
       "[WARN] Video recording with dummy agents is disabled (no checkpoint/log_dir)."
     )
+  # For the balance_weight task, disable randomization events in play mode
+  # so the user can set masses manually without reset-time randomization
+  # overwriting them (the _WeightController also re-asserts every step,
+  # but removing the events avoids an expensive recompute on every reset).
+  if task_id == "Unitree-G1-Flat-Balance-Weight":
+    for _ev in ("randomize_hand_weights", "randomize_back_weight"):
+      env_cfg.events.pop(_ev, None)
+    # Also drop the mass curricula — they adjust event params that no
+    # longer exist.
+    for _cur in ("hand_weight_range", "back_weight_range"):
+      env_cfg.curriculum.pop(_cur, None)
+
   env = ManagerBasedRlEnv(cfg=env_cfg, device=device, render_mode=render_mode)
 
   if TRAINED_MODE and cfg.video:
@@ -609,6 +820,17 @@ def run_play(task_id: str, cfg: PlayConfig):
     )
     policy = runner.get_inference_policy(device=device)
 
+  # For the balance_weight task: instantiate a keyboard-driven weight
+  # controller. It writes user-set masses into sim.model.body_mass every
+  # step so the robot's payload is whatever the user typed.
+  weight_ctrl: _WeightController | None = None
+  if task_id == "Unitree-G1-Flat-Balance-Weight":
+    try:
+      weight_ctrl = _WeightController(env)
+    except Exception as e:
+      print(f"[WARN] Failed to set up weight controller: {e}")
+      weight_ctrl = None
+
   # Handle "auto" viewer selection.
   if cfg.viewer == "auto":
     has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
@@ -617,12 +839,15 @@ def run_play(task_id: str, cfg: PlayConfig):
   else:
     resolved_viewer = cfg.viewer
 
+  if weight_ctrl is not None and resolved_viewer == "native":
+    weight_ctrl.start()
+
   try:
     if resolved_viewer == "native":
       if _js_viewer_kwargs is not None:
-        viewer = _JoystickViewer(env, policy, **_js_viewer_kwargs)
+        viewer = _JoystickViewer(env, policy, weight_ctrl=weight_ctrl, **_js_viewer_kwargs)
       else:
-        viewer = _TermLoggingViewer(env, policy)
+        viewer = _TermLoggingViewer(env, policy, weight_ctrl=weight_ctrl)
       viewer.run()
     elif resolved_viewer == "viser":
       ViserPlayViewer(env, policy).run()
@@ -631,6 +856,8 @@ def run_play(task_id: str, cfg: PlayConfig):
   except KeyboardInterrupt:
     print("\n[INFO] Interrupted, exiting...")
   finally:
+    if weight_ctrl is not None:
+      weight_ctrl.stop()
     try:
       env.close()
     except Exception:

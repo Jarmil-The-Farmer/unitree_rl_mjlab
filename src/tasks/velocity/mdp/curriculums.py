@@ -194,3 +194,45 @@ def reward_weight(
     if env.common_step_counter > stage["step"]:
       reward_term_cfg.weight = stage["weight"]
   return torch.tensor([reward_term_cfg.weight])
+
+
+class EventRangeStage(TypedDict):
+  step: int
+  ranges: tuple[float, float]
+
+
+def event_ranges(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  event_name: str,
+  stages: list[EventRangeStage],
+) -> dict[str, torch.Tensor]:
+  """Update an event term's ``ranges`` param over training-step stages.
+
+  Useful for domain randomization terms that accept a ``ranges`` parameter
+  (e.g. ``dr.body_mass(ranges=(lo, hi))``). Stages are step thresholds;
+  between them the range is linearly interpolated so the distribution
+  widens smoothly.
+  """
+  del env_ids  # Unused.
+  step = env.common_step_counter
+
+  prev = stages[0]
+  lo, hi = prev["ranges"]
+  for stage in stages:
+    if step >= stage["step"]:
+      prev = stage
+      lo, hi = prev["ranges"]
+    else:
+      t = (step - prev["step"]) / max(stage["step"] - prev["step"], 1)
+      lo = prev["ranges"][0] + t * (stage["ranges"][0] - prev["ranges"][0])
+      hi = prev["ranges"][1] + t * (stage["ranges"][1] - prev["ranges"][1])
+      break
+
+  event_cfg = env.event_manager.get_term_cfg(event_name)
+  event_cfg.params["ranges"] = (lo, hi)
+
+  return {
+    f"{event_name}_range_lo": torch.tensor(lo),
+    f"{event_name}_range_hi": torch.tensor(hi),
+  }

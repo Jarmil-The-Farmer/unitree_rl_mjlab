@@ -13,13 +13,15 @@ from mjlab.envs import mdp as envs_mdp
 from mjlab.envs.mdp import dr
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
-from src.tasks.velocity.mdp.curriculums import arm_pose_randomization_curriculum, reward_weight, standing_balance
+from src.tasks.velocity.mdp.curriculums import arm_pose_randomization_curriculum, event_ranges, reward_weight, standing_balance
 from src.tasks.velocity.mdp.events import nudge_joints_position, nudge_joints_velocity, randomize_arm_pose
+from src.tasks.velocity.mdp.observations import payload_masses
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
 from src.tasks.velocity.mdp.rewards import joint_deviation_l2, stand_still_lin_vel, track_base_height, track_linear_velocity_no_z
@@ -712,8 +714,10 @@ def unitree_g1_flat_balance_weight_env_cfg(play: bool = False) -> ManagerBasedRl
 
   # --- Payload mass randomization. ---
   # Hand weights: resample on every episode reset to simulate the robot
-  # picking up / putting down different objects. Range: 0-4 kg per hand,
-  # left and right drawn independently.
+  # picking up / putting down different objects. Final range: 0-4 kg per
+  # hand (left and right drawn independently). Starts narrow and widens
+  # via the ``hand_weight_range`` curriculum so the policy first learns
+  # to balance under a small load, then generalises.
   cfg.events["randomize_hand_weights"] = EventTermCfg(
     mode="reset",
     func=dr.body_mass,
@@ -722,18 +726,65 @@ def unitree_g1_flat_balance_weight_env_cfg(play: bool = False) -> ManagerBasedRl
         "robot", body_names=("left_hand_weight", "right_hand_weight"),
       ),
       "operation": "abs",
-      "ranges": (0.0, 4.0),
+      "ranges": (0.0, 0.5),  # curriculum widens this to (0, 4)
     },
   )
   # Back weight: sampled once per env at startup, held constant for that
-  # env's lifetime (static load, e.g. a fixed backpack). Range: 0-8 kg.
+  # env's lifetime (static load, e.g. a fixed backpack). Final range:
+  # 0-8 kg. Also curriculum-ramped.
   cfg.events["randomize_back_weight"] = EventTermCfg(
     mode="startup",
     func=dr.body_mass,
     params={
       "asset_cfg": SceneEntityCfg("robot", body_names=("back_weight",)),
       "operation": "abs",
-      "ranges": (0.0, 8.0),
+      "ranges": (0.0, 1.0),  # curriculum widens this to (0, 8)
+    },
+  )
+
+  # --- Privileged critic observation: current payload masses. ---
+  # Actor must infer payload from proprioception (sim-to-real safe), but
+  # the critic gets the true masses for a cleaner value baseline. This
+  # typically speeds up PPO convergence on DR-heavy tasks.
+  _payload_asset_cfg = SceneEntityCfg(
+    "robot",
+    body_names=("left_hand_weight", "right_hand_weight", "back_weight"),
+  )
+  cfg.observations["critic"].terms["payload_masses"] = ObservationTermCfg(
+    func=payload_masses,
+    params={"asset_cfg": _payload_asset_cfg},
+  )
+
+  # --- Curricula that widen the mass ranges over training. ---
+  # Hand-weight range is used by a reset-mode event, so resampling happens
+  # each episode. Back-weight is startup-only and will keep its initial
+  # sampled value per env; the back curriculum only changes what *new*
+  # envs (if the sim ever instantiates more) would draw, but we still
+  # ramp it for completeness and for evaluation/play use.
+  cfg.curriculum["hand_weight_range"] = CurriculumTermCfg(
+    func=event_ranges,
+    params={
+      "event_name": "randomize_hand_weights",
+      "stages": [
+        {"step": 0,           "ranges": (0.0, 0.5)},
+        {"step": 3000 * 24,   "ranges": (0.0, 1.5)},
+        {"step": 8000 * 24,   "ranges": (0.0, 2.5)},
+        {"step": 14000 * 24,  "ranges": (0.0, 3.5)},
+        {"step": 20000 * 24,  "ranges": (0.0, 4.0)},
+      ],
+    },
+  )
+  cfg.curriculum["back_weight_range"] = CurriculumTermCfg(
+    func=event_ranges,
+    params={
+      "event_name": "randomize_back_weight",
+      "stages": [
+        {"step": 0,           "ranges": (0.0, 1.0)},
+        {"step": 3000 * 24,   "ranges": (0.0, 3.0)},
+        {"step": 8000 * 24,   "ranges": (0.0, 5.0)},
+        {"step": 14000 * 24,  "ranges": (0.0, 7.0)},
+        {"step": 20000 * 24,  "ranges": (0.0, 8.0)},
+      ],
     },
   )
 

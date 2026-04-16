@@ -44,6 +44,24 @@ def foot_contact_forces(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tenso
   return torch.sign(forces_flat) * torch.log1p(torch.abs(forces_flat))
 
 
+def payload_masses(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Per-env masses of selected bodies (privileged critic observation).
+
+  Returns a ``(num_envs, len(body_ids))`` tensor read directly from the
+  per-world ``sim.model.body_mass`` buffer. Meant for asymmetric actor/
+  critic setups where the critic sees the current payload while the actor
+  must infer it from proprioception.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  # asset_cfg.body_ids are entity-local; sim.model.body_mass is sim-global.
+  # indexing.body_ids maps entity-local -> sim-global.
+  global_ids = asset.indexing.body_ids[asset_cfg.body_ids]
+  return env.sim.model.body_mass[:, global_ids].to(env.device)
+
+
 def phase(env: ManagerBasedRlEnv, period: float, command_name: str) -> torch.Tensor:
     global_phase = (env.episode_length_buf * env.step_dt) % period / period
     phase = torch.zeros(env.num_envs, 2, device=env.device)
