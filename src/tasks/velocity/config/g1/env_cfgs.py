@@ -755,6 +755,38 @@ def unitree_g1_flat_balance_weight_env_cfg(play: bool = False) -> ManagerBasedRl
     params={"asset_cfg": _payload_asset_cfg},
   )
 
+  # --- Observation history (system identification). ---
+  # Stack the last N proprioceptive snapshots so the policy can infer
+  # payload mass from the trajectory of joint torques/velocities/gravity,
+  # not just a single frame. Noise is applied per-snapshot before being
+  # pushed into the history buffer, so each stacked frame carries an
+  # independent noise realization (good for robustness). Command and phase
+  # are excluded — they're externally supplied and don't carry sys-id
+  # signal. payload_masses (privileged) and foot_* sensors are kept as
+  # single-frame since the policy doesn't need trajectories of them.
+  #
+  # NOTE: the base velocity template sets group-level ``history_length=1``,
+  # which overrides per-term values. We must clear the group-level override
+  # (``None``) so per-term settings take effect.
+  _HISTORY_LENGTH = 5
+  _HISTORY_TERMS = (
+    "base_ang_vel",
+    "projected_gravity",
+    "joint_pos",
+    "joint_vel",
+    "actions",
+  )
+  _CRITIC_EXTRA_HISTORY_TERMS = ("base_lin_vel",)
+  for _group_name, _extras in (
+    ("actor", ()),
+    ("critic", _CRITIC_EXTRA_HISTORY_TERMS),
+  ):
+    _group = cfg.observations[_group_name]
+    _group.history_length = None  # disable group-level override
+    for _term_name in _HISTORY_TERMS + _extras:
+      if _term_name in _group.terms:
+        _group.terms[_term_name].history_length = _HISTORY_LENGTH
+
   # --- Curricula that widen the mass ranges over training. ---
   # Hand-weight range is used by a reset-mode event, so resampling happens
   # each episode. Back-weight is startup-only and will keep its initial

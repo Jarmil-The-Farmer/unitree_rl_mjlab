@@ -99,8 +99,23 @@ def _add_weight_box(
   geom.group = 2  # visual group
 
 
+def _remove_rubber_hands(spec: mujoco.MjSpec) -> None:
+  """Delete the visual rubber_hand mesh geoms from the wrist_yaw_links.
+
+  They are mass-less (density=0 via the visual default class) so they do
+  not affect dynamics, but they are visually confusing in the balance_weight
+  task where the policy carries boxes instead of hands.
+  """
+  to_delete = [
+    g for g in spec.geoms if "rubber_hand" in (g.meshname or "")
+  ]
+  for g in to_delete:
+    spec.delete(g)
+
+
 def _augment_weight_spec(spec: mujoco.MjSpec) -> None:
-  """Attach the three weight boxes to the G1 spec."""
+  """Attach the three weight boxes to the G1 spec (no rubber hands)."""
+  _remove_rubber_hands(spec)
   _add_weight_box(
     spec,
     parent_name="left_wrist_yaw_link",
