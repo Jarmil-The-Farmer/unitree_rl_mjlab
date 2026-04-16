@@ -33,6 +33,7 @@
 #include "simulate.h"
 #include "array_safety.h"
 #include "unitree_sdk2_bridge.h"
+#include "image_server.h"
 #include "param.h"
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
@@ -571,6 +572,47 @@ void PhysicsThread(mj::Simulate *sim, const char *filename)
   exit(0);
 }
 
+// Args bundle for ImageServerThread (sim + pre-created hidden GLFW window).
+struct ImageServerArgs {
+    mj::Simulate *sim;
+    GLFWwindow *gl_window;
+};
+
+void *ImageServerThread(void *arg)
+{
+    if (!param::config.enable_image_server) {
+        return nullptr;
+    }
+
+    auto *args = static_cast<ImageServerArgs *>(arg);
+    mj::Simulate *sim = args->sim;
+    GLFWwindow *gl_window = args->gl_window;
+
+    // Wait until the model + data are ready.
+    while (true) {
+        if (m && d) break;
+        usleep(500000);
+    }
+
+    image_server::Config cfg;
+    cfg.enable = true;
+    cfg.port = param::config.image_server_port;
+    cfg.fps = param::config.image_server_fps;
+    cfg.width = param::config.image_server_width;
+    cfg.height = param::config.image_server_height;
+    cfg.jpeg_quality = param::config.image_server_jpeg_quality;
+    cfg.camera_name = param::config.image_server_camera;
+
+    image_server::ImageServer server(m, d, &sim->mtx, gl_window, cfg);
+    server.start();
+
+    while (!sim->exitrequest.load()) {
+        sleep(1);
+    }
+    server.stop();
+    return nullptr;
+}
+
 void *UnitreeSdk2BridgeThread(void *arg)
 {
   // Wait for mujoco data
@@ -683,7 +725,31 @@ int main(int argc, char **argv)
     std::make_unique<mj::GlfwAdapter>(),
     &cam, &opt, &pert, /* is_passive = */ false);
 
+  // Create a hidden GLFW window on the main thread (GLFW requirement) so the
+  // image server thread can take ownership of its OpenGL context for offscreen
+  // rendering. The simulate viewer's own window stays current on the main
+  // thread; this hidden window's context is not made current here.
+  GLFWwindow *image_server_window = nullptr;
+  if (param::config.enable_image_server) {
+    GLFWwindow *prev_current = glfwGetCurrentContext();
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    glfwWindowHint(GLFW_DOUBLEBUFFER, GLFW_FALSE);
+    image_server_window = glfwCreateWindow(
+        param::config.image_server_width,
+        param::config.image_server_height,
+        "image_server (hidden)", nullptr, nullptr);
+    // Restore default hints so the simulate viewer window is unaffected.
+    glfwDefaultWindowHints();
+    if (!image_server_window) {
+      std::fprintf(stderr, "[image_server] glfwCreateWindow (hidden) failed; image server disabled.\n");
+    }
+    // Defensive: keep the simulate viewer's GL context current on this thread.
+    glfwMakeContextCurrent(prev_current);
+  }
+  ImageServerArgs image_server_args{sim.get(), image_server_window};
+
   std::thread unitree_thread(UnitreeSdk2BridgeThread, nullptr);
+  std::thread image_server_thread(ImageServerThread, &image_server_args);
 
   // start physics thread
   std::thread physicsthreadhandle(&PhysicsThread, sim.get(), param::config.robot_scene.c_str());

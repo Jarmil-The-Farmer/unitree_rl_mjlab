@@ -1,5 +1,6 @@
 robot: "g1"
-robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_inspire.xml"
+robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_inspire_cam.xml"
+#robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_inspire.xml"
 #robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1.xml"
 #robot: "g1_23dof"
 #robot_scene: "src/assets/robots/unitree_g1/xmls/scene_g1_23dof.xml"
@@ -21,3 +22,15 @@ joystick_bits: 16 # Some game controllers may only have 8-bit accuracy
 print_scene_information: 1 # Print link, joint and sensors information of robot
 
 enable_elastic_band: 0 # Virtual spring band, used for lifting h1
+
+# Virtual head camera streamed over ZMQ PUB (mirrors teleop image_server.py
+# running on the real robot). Set enable: 1 to start the server. The robot
+# scene must define a camera with the configured name (head_cam by default).
+image_server:
+  enable: 1
+  port: 5555
+  fps: 30
+  width: 1280
+  height: 1072
+  jpeg_quality: 80
+  camera: "head_cam"

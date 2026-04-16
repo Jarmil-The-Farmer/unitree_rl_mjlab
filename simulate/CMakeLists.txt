@@ -39,6 +39,8 @@ link_libraries(
   unitree_sdk2
   boost_program_options
   fmt
+  zmq
+  turbojpeg
 )
 
 add_executable(unitree_mujoco ${SIM_SRC} src/main.cc)

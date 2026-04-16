@@ -26,6 +26,15 @@ inline struct SimulationConfig
     int enable_elastic_band;
     int band_attached_link = 0;
 
+    // Image server (mirror of teleop image_server.py running on the real robot).
+    int enable_image_server = 0;
+    int image_server_port = 5555;
+    int image_server_fps = 30;
+    int image_server_width = 640;
+    int image_server_height = 480;
+    int image_server_jpeg_quality = 80;
+    std::string image_server_camera = "head_cam";
+
     void load_from_yaml(const std::string &filename)
     {
         auto cfg = YAML::LoadFile(filename);
@@ -41,6 +50,18 @@ inline struct SimulationConfig
             joystick_bits = cfg["joystick_bits"].as<int>();
             print_scene_information = cfg["print_scene_information"].as<int>();
             enable_elastic_band = cfg["enable_elastic_band"].as<int>();
+
+            // Optional image server section.
+            if (cfg["image_server"]) {
+                auto is = cfg["image_server"];
+                if (is["enable"]) enable_image_server = is["enable"].as<int>();
+                if (is["port"]) image_server_port = is["port"].as<int>();
+                if (is["fps"]) image_server_fps = is["fps"].as<int>();
+                if (is["width"]) image_server_width = is["width"].as<int>();
+                if (is["height"]) image_server_height = is["height"].as<int>();
+                if (is["jpeg_quality"]) image_server_jpeg_quality = is["jpeg_quality"].as<int>();
+                if (is["camera"]) image_server_camera = is["camera"].as<std::string>();
+            }
         }
         catch(const std::exception& e)
         {
