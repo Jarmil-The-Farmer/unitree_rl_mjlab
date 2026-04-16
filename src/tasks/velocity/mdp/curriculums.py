@@ -96,6 +96,7 @@ class StandingBalanceStage(TypedDict):
   step: int
   rel_standing_envs: float | None
   nudge_speed: float | None
+  nudge_offset_range: tuple[float, float] | None
 
 
 def standing_balance(
@@ -122,6 +123,8 @@ def standing_balance(
         cfg.rel_standing_envs = stage["rel_standing_envs"]
       if stage.get("nudge_speed") is not None:
         nudge_cfg.params["speed"] = stage["nudge_speed"]
+      if stage.get("nudge_offset_range") is not None:
+        nudge_cfg.params["position_offset_range"] = stage["nudge_offset_range"]
   return {}
 
 

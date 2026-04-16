@@ -15,7 +15,7 @@ from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
-from src.tasks.velocity.mdp.curriculums import arm_pose_randomization_curriculum, standing_balance
+from src.tasks.velocity.mdp.curriculums import arm_pose_randomization_curriculum, reward_weight, standing_balance
 from src.tasks.velocity.mdp.events import nudge_joints_position, nudge_joints_velocity, randomize_arm_pose
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
@@ -540,6 +540,42 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
 
   # 8) Add shoulder_roll randomization to prevent arm crossing.
   cfg.events["randomize_arm_pose"].params["shoulder_roll_range"] = (0.2, 0.8)
+
+  # 9) Smoothness curriculum: ramp up action_rate and joint_acc penalties
+  # in later training to eliminate tremor once basic balance is learned.
+  cfg.curriculum["action_rate_weight"] = CurriculumTermCfg(
+    func=reward_weight,
+    params={
+      "reward_name": "action_rate_l2",
+      "weight_stages": [
+        {"step": 0,           "weight": -0.05},   # base value
+        {"step": 8000 * 24,   "weight": -0.15},
+        {"step": 15000 * 24,  "weight": -0.3},
+      ],
+    },
+  )
+  cfg.curriculum["joint_acc_weight"] = CurriculumTermCfg(
+    func=reward_weight,
+    params={
+      "reward_name": "joint_acc_l2",
+      "weight_stages": [
+        {"step": 0,           "weight": -2.5e-7},  # base value
+        {"step": 8000 * 24,   "weight": -7.5e-7},
+        {"step": 15000 * 24,  "weight": -1.5e-6},
+      ],
+    },
+  )
+
+  # 10) Arm nudge curriculum: ramp speed and offset range for more
+  # aggressive arm motion in later training.
+  cfg.curriculum["standing_balance"].params["stages"] = [
+    {"step": 0,           "rel_standing_envs": 0.2, "nudge_speed": 0.3, "nudge_offset_range": (-0.5, 0.5)},
+    {"step": 2000 * 24,   "rel_standing_envs": 0.4, "nudge_speed": 0.5, "nudge_offset_range": (-0.5, 0.5)},
+    {"step": 4000 * 24,   "rel_standing_envs": 0.6, "nudge_speed": 0.8, "nudge_offset_range": (-0.7, 0.7)},
+    {"step": 8000 * 24,   "rel_standing_envs": 0.7, "nudge_speed": 1.2, "nudge_offset_range": (-0.8, 0.8)},
+    {"step": 12000 * 24,  "rel_standing_envs": 0.7, "nudge_speed": 1.8, "nudge_offset_range": (-1.0, 1.0)},
+    {"step": 18000 * 24,  "rel_standing_envs": 0.7, "nudge_speed": 2.5, "nudge_offset_range": (-1.2, 1.2)},
+  ]
 
   if play:
     twist_cmd = cfg.commands["twist"]
