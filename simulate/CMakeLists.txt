@@ -14,20 +14,31 @@ find_package(unitree_sdk2 REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
 
 
+# MuJoCo C library — downloaded by simulate/download_mujoco.sh.
+# Override with -DMUJOCO_DIR=/path/to/mujoco if installed elsewhere.
+if(NOT DEFINED MUJOCO_DIR)
+  set(MUJOCO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/mujoco")
+endif()
+if(NOT EXISTS "${MUJOCO_DIR}/lib/libmujoco.so")
+  message(FATAL_ERROR
+    "MuJoCo not found at ${MUJOCO_DIR}/lib/libmujoco.so\n"
+    "Run: ./simulate/download_mujoco.sh")
+endif()
+
 include_directories(
-  mujoco/include
-  mujoco/simulate
+  ${MUJOCO_DIR}/include
+  ${MUJOCO_DIR}/simulate
   src/lodepng
 )
-link_directories(mujoco/lib)
+link_directories(${MUJOCO_DIR}/lib)
 
 file(GLOB SIM_SRC
   src/joystick/joystick.cc
 
   # exclude mujoco/simulate/main.cc
-  mujoco/simulate/glfw_*.cc
-  mujoco/simulate/platform_*.cc
-  mujoco/simulate/simulate.cc
+  ${MUJOCO_DIR}/simulate/glfw_*.cc
+  ${MUJOCO_DIR}/simulate/platform_*.cc
+  ${MUJOCO_DIR}/simulate/simulate.cc
   src/lodepng/lodepng.cpp
 )
 

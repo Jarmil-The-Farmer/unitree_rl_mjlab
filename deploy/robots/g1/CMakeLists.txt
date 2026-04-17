@@ -11,9 +11,14 @@ find_package(yaml-cpp REQUIRED)
 find_package(ZLIB REQUIRED)
 
 # MuJoCo (required for arm collision checking).
-set(MUJOCO_DIR "${PROJECT_SOURCE_DIR}/../../../simulate/mujoco")
+# Downloaded by simulate/download_mujoco.sh. Override with -DMUJOCO_DIR=...
+if(NOT DEFINED MUJOCO_DIR)
+  set(MUJOCO_DIR "${PROJECT_SOURCE_DIR}/../../../simulate/mujoco")
+endif()
 if(NOT EXISTS "${MUJOCO_DIR}/lib/libmujoco.so")
-  message(FATAL_ERROR "MuJoCo not found at ${MUJOCO_DIR}/lib/libmujoco.so")
+  message(FATAL_ERROR
+    "MuJoCo not found at ${MUJOCO_DIR}/lib/libmujoco.so\n"
+    "Run: ./simulate/download_mujoco.sh")
 endif()
 
 if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")

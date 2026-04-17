@@ -182,7 +182,15 @@ Connect your PC to the robot via Ethernet. Configure the network as:
 
 Use `ifconfig` to determine the Ethernet device name for deployment.
 
-#### 4.4 Compilation
+#### 4.4 Download MuJoCo
+
+MuJoCo is required for arm collision checking (deploy) and simulation. Run the download script which auto-detects your platform (x86_64 / aarch64):
+
+```bash
+./simulate/download_mujoco.sh
+```
+
+#### 4.5 Compilation
 
 Example: Unitree G1 velocity control.
 Place `policy.onnx` and `policy.onnx.data` into: `deploy/robots/g1/config/policy/velocity/v0/exported`.
@@ -194,9 +202,9 @@ mkdir build && cd build
 cmake .. && make
 ```
 
-#### 4.5 Deployment
+#### 4.6 Deployment
 
-## 4.5.1 Simulation Deployment
+## 4.6.1 Simulation Deployment
 
 Before deploying on the real robot, it is recommended to perform simulation deployment using [unitree_mujoco](https://github.com/unitreerobotics/unitree_mujoco)
 to prevent abnormal behaviors on the physical robot. This framework has already integrated it.
@@ -224,7 +232,7 @@ cd deploy/robots/g1/build
 ./g1_ctrl --network=lo
 ```
 
-## 4.5.2 Real-Robot Deployment
+## 4.6.2 Real-Robot Deployment
 
 Launch the control program on the real robot:
 
