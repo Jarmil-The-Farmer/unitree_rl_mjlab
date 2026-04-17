@@ -714,10 +714,9 @@ def unitree_g1_flat_balance_weight_env_cfg(play: bool = False) -> ManagerBasedRl
 
   # --- Payload mass randomization. ---
   # Hand weights: resample on every episode reset to simulate the robot
-  # picking up / putting down different objects. Final range: 0-4 kg per
-  # hand (left and right drawn independently). Starts narrow and widens
-  # via the ``hand_weight_range`` curriculum so the policy first learns
-  # to balance under a small load, then generalises.
+  # picking up / putting down different objects. Final range: 0-2.5 kg per
+  # hand (left and right drawn independently). With kp=40, 2.5 kg causes
+  # ~25° sag at the shoulder — the practical limit for stable holding.
   cfg.events["randomize_hand_weights"] = EventTermCfg(
     mode="reset",
     func=dr.body_mass,
@@ -726,19 +725,19 @@ def unitree_g1_flat_balance_weight_env_cfg(play: bool = False) -> ManagerBasedRl
         "robot", body_names=("left_hand_weight", "right_hand_weight"),
       ),
       "operation": "abs",
-      "ranges": (0.0, 0.5),  # curriculum widens this to (0, 4)
+      "ranges": (0.0, 0.5),  # curriculum widens this to (0, 2.5)
     },
   )
   # Back weight: sampled once per env at startup, held constant for that
   # env's lifetime (static load, e.g. a fixed backpack). Final range:
-  # 0-8 kg. Also curriculum-ramped.
+  # 0-5 kg (~14% of G1 body mass).
   cfg.events["randomize_back_weight"] = EventTermCfg(
     mode="startup",
     func=dr.body_mass,
     params={
       "asset_cfg": SceneEntityCfg("robot", body_names=("back_weight",)),
       "operation": "abs",
-      "ranges": (0.0, 1.0),  # curriculum widens this to (0, 8)
+      "ranges": (0.0, 1.0),  # curriculum widens this to (0, 5)
     },
   )
 
@@ -804,10 +803,10 @@ def unitree_g1_flat_balance_weight_env_cfg(play: bool = False) -> ManagerBasedRl
       "event_name": "randomize_hand_weights",
       "stages": [
         {"step": 0,           "ranges": (0.0, 0.5)},
-        {"step": 3000 * 24,   "ranges": (0.0, 1.5)},
-        {"step": 8000 * 24,   "ranges": (0.0, 2.5)},
-        {"step": 14000 * 24,  "ranges": (0.0, 3.5)},
-        {"step": 20000 * 24,  "ranges": (0.0, 4.0)},
+        {"step": 3000 * 24,   "ranges": (0.0, 1.0)},
+        {"step": 8000 * 24,   "ranges": (0.0, 1.5)},
+        {"step": 14000 * 24,  "ranges": (0.0, 2.0)},
+        {"step": 20000 * 24,  "ranges": (0.0, 2.5)},
       ],
     },
   )
@@ -817,10 +816,10 @@ def unitree_g1_flat_balance_weight_env_cfg(play: bool = False) -> ManagerBasedRl
       "event_name": "randomize_back_weight",
       "stages": [
         {"step": 0,           "ranges": (0.0, 1.0)},
-        {"step": 3000 * 24,   "ranges": (0.0, 3.0)},
-        {"step": 8000 * 24,   "ranges": (0.0, 5.0)},
-        {"step": 14000 * 24,  "ranges": (0.0, 7.0)},
-        {"step": 20000 * 24,  "ranges": (0.0, 8.0)},
+        {"step": 3000 * 24,   "ranges": (0.0, 2.0)},
+        {"step": 8000 * 24,   "ranges": (0.0, 3.0)},
+        {"step": 14000 * 24,  "ranges": (0.0, 4.0)},
+        {"step": 20000 * 24,  "ranges": (0.0, 5.0)},
       ],
     },
   )
