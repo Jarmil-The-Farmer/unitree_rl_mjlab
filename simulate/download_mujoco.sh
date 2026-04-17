@@ -44,8 +44,8 @@ wget -q --show-progress -O "${TMPDIR}/${TARBALL}" "$URL"
 echo "Extracting..."
 tar xzf "${TMPDIR}/${TARBALL}" -C "${TMPDIR}"
 
-# The tarball extracts to mujoco-VERSION-PLATFORM/
-EXTRACTED="${TMPDIR}/mujoco-${VERSION}-${PLATFORM}"
+# The tarball extracts to mujoco-VERSION/ (no platform suffix).
+EXTRACTED="${TMPDIR}/mujoco-${VERSION}"
 if [ ! -d "$EXTRACTED" ]; then
   echo "Error: expected directory ${EXTRACTED} not found after extraction"
   exit 1
