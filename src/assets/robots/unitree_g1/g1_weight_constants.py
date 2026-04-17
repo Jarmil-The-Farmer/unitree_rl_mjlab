@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import mujoco
 
+from mjlab.actuator import BuiltinPositionActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
 from .g1_constants import (
+  ARMATURE_5020,
+  ARMATURE_4010,
   FULL_COLLISION,
   G1_ACTION_SCALE,
   G1_ACTUATOR_4010,
@@ -21,6 +24,8 @@ from .g1_constants import (
   G1_ACTUATOR_7520_22,
   G1_ACTUATOR_ANKLE,
   G1_ACTUATOR_WAIST,
+  ACTUATOR_5020,
+  ACTUATOR_4010,
   get_spec as _get_g1_spec,
 )
 
@@ -174,16 +179,48 @@ WEIGHT_BALANCE_HOME_KEYFRAME = EntityCfg.InitialStateCfg(
 )
 
 
-# Same 29 DoF actuators as the base G1 — the weight boxes are fixed children
-# and do not introduce new joints.
+# Arm actuator overrides — match deploy firmware gains (State_RLBase.cpp).
+# The default sim gains (G1_ACTUATOR_5020: kp=14.25) are derived from motor
+# physics, but the real firmware uses kp=40, kd=10. With the default sim gains
+# a 2 kg payload causes ~58° sag vs. ~21° on real hardware, making the sim-to-
+# real gap unacceptable for payload training. We override arm joints only;
+# legs/waist already match deploy exactly.
+_ARM_KP = 40.0   # deploy: ARM_KP = 40.0
+_ARM_KD = 5.0    # deploy: ARM_KD = 10.0 (halved to avoid over-damping in sim)
+
+G1_WEIGHT_ARM_5020 = BuiltinPositionActuatorCfg(
+  target_names_expr=(
+    ".*_elbow_joint",
+    ".*_shoulder_pitch_joint",
+    ".*_shoulder_roll_joint",
+    ".*_shoulder_yaw_joint",
+    ".*_wrist_roll_joint",
+  ),
+  stiffness=_ARM_KP,
+  damping=_ARM_KD,
+  effort_limit=ACTUATOR_5020.effort_limit,  # 25 Nm — physical limit unchanged
+  armature=ARMATURE_5020,
+)
+
+G1_WEIGHT_ARM_4010 = BuiltinPositionActuatorCfg(
+  target_names_expr=(
+    ".*_wrist_pitch_joint",
+    ".*_wrist_yaw_joint",
+  ),
+  stiffness=_ARM_KP,
+  damping=_ARM_KD,
+  effort_limit=ACTUATOR_4010.effort_limit,  # 5 Nm
+  armature=ARMATURE_4010,
+)
+
 G1_WEIGHT_ARTICULATION = EntityArticulationInfoCfg(
   actuators=(
-    G1_ACTUATOR_5020,
-    G1_ACTUATOR_7520_14,
-    G1_ACTUATOR_7520_22,
-    G1_ACTUATOR_4010,
-    G1_ACTUATOR_WAIST,
-    G1_ACTUATOR_ANKLE,
+    G1_WEIGHT_ARM_5020,   # arm 5020 joints with deploy-matched gains
+    G1_ACTUATOR_7520_14,  # hip_pitch, hip_yaw, waist_yaw
+    G1_ACTUATOR_7520_22,  # hip_roll, knee
+    G1_WEIGHT_ARM_4010,   # wrist pitch/yaw with deploy-matched gains
+    G1_ACTUATOR_WAIST,    # waist pitch/roll
+    G1_ACTUATOR_ANKLE,    # ankle pitch/roll
   ),
   soft_joint_pos_limit_factor=0.9,
 )
