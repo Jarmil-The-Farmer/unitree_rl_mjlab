@@ -742,13 +742,18 @@ def unitree_g1_flat_balance_weight_env_cfg(play: bool = False) -> ManagerBasedRl
     },
   )
 
-  # --- Privileged critic observation: current payload masses. ---
-  # Actor must infer payload from proprioception (sim-to-real safe), but
-  # the critic gets the true masses for a cleaner value baseline. This
-  # typically speeds up PPO convergence on DR-heavy tasks.
+  # --- Payload masses in actor + critic observations. ---
+  # Both actor and critic see the current payload masses (3-dim: left
+  # hand, right hand, back). For sim-to-real deploy, these values must
+  # come from an external source (e.g. a scale sensor, known object
+  # weight, or a mass estimator).
   _payload_asset_cfg = SceneEntityCfg(
     "robot",
     body_names=("left_hand_weight", "right_hand_weight", "back_weight"),
+  )
+  cfg.observations["actor"].terms["payload_masses"] = ObservationTermCfg(
+    func=payload_masses,
+    params={"asset_cfg": _payload_asset_cfg},
   )
   cfg.observations["critic"].terms["payload_masses"] = ObservationTermCfg(
     func=payload_masses,
