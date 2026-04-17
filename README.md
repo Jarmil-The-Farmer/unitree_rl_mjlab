@@ -151,9 +151,21 @@ python scripts/play.py Unitree-G1-Tracking --motion_file=src/assets/motions/g1/d
 
 ### 4. Real Deployment
 
-Before deployment, install the required communication tools:
+Before deployment, install the required tools and libraries:
+
+**Communication (required):**
 - [cyclonedds](https://github.com/eclipse-cyclonedds/cyclonedds.git)
 - [unitree_sdk2](https://github.com/unitreerobotics/unitree_sdk2.git)
+
+**System libraries (required):**
+```bash
+sudo apt install libboost-program-options-dev libyaml-cpp-dev libeigen3-dev libfmt-dev zlib1g-dev
+```
+
+**Optional (for LCM arm control and simulation):**
+```bash
+sudo apt install liblcm-dev libglfw3-dev libzmq3-dev libturbojpeg0-dev
+```
 
 <div style="margin-left: 20px;">
 
