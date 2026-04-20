@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include "FSMState.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 #include "isaaclab/envs/mdp/terminations.h"
@@ -24,6 +25,7 @@ public:
         }
 
         env->robot->update();
+        ramp_step_ = 0;
         // Start policy thread
         policy_thread_running = true;
         policy_thread = std::thread([this]{
@@ -38,6 +40,7 @@ public:
             while (policy_thread_running)
             {
                 env->step();
+                ramp_step_++;
 
                 // Sleep
                 std::this_thread::sleep_until(sleepTill);
@@ -56,11 +59,19 @@ public:
         }
     }
 
+    // Ramp-up duration in steps (2.0s at 50Hz = 100 steps).
+    static constexpr int RAMP_STEPS = 100;
+    float ramp_factor() const {
+        if (ramp_step_ >= RAMP_STEPS) return 1.0f;
+        return static_cast<float>(ramp_step_) / static_cast<float>(RAMP_STEPS);
+    }
+
 private:
     std::unique_ptr<isaaclab::ManagerBasedRLEnv> env;
 
     std::thread policy_thread;
     bool policy_thread_running = false;
+    std::atomic<int> ramp_step_{0};
 };
 
 REGISTER_FSM(State_RLBase)

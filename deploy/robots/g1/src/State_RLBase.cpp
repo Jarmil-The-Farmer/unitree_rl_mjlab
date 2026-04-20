@@ -156,8 +156,36 @@ void State_RLBase::run()
     // action.size() may be smaller than joint_ids_map.size() when the policy
     // only controls a subset of joints (e.g. legs/waist but not arms).
     auto num_action_joints = std::min(action.size(), env->robot->data.joint_ids_map.size());
+
+    // Rate-limit: interpolate max delta from tight (startup) to permissive.
+    // At 50Hz: 0.01 rad/step = 0.5 rad/s, 0.2 rad/step = 10 rad/s.
+    constexpr float MAX_DELTA_START = 0.01f;   // 0.5 rad/s
+    constexpr float MAX_DELTA_FULL = 0.2f;     // 10 rad/s (safety cap)
+    const float alpha = ramp_factor();
+    const float max_delta = MAX_DELTA_START + alpha * (MAX_DELTA_FULL - MAX_DELTA_START);
+
+    // Log joint positions every ~10s.
+    static int log_counter_ = 0;
+    log_counter_++;
+    if (log_counter_ % 5000 == 0) {
+        std::string pos_str = "[Joint positions] ";
+        std::lock_guard<std::mutex> lock(lowstate->mutex_);
+        for (int i = 0; i < 29; ++i) {
+            pos_str += fmt::format("{:.4f}", lowstate->msg_.motor_state()[i].q());
+            if (i < 28) pos_str += ", ";
+        }
+        spdlog::info(pos_str);
+    }
+
     for(size_t i(0); i < num_action_joints; i++) {
-        lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]].q() = action[i];
+        int motor_id = env->robot->data.joint_ids_map[i];
+        float current_cmd = lowcmd->msg_.motor_cmd()[motor_id].q();
+        float desired = action[i];
+        float delta = desired - current_cmd;
+        // Clamp the step size.
+        if (delta > max_delta) delta = max_delta;
+        if (delta < -max_delta) delta = -max_delta;
+        lowcmd->msg_.motor_cmd()[motor_id].q() = current_cmd + delta;
     }
 
 #ifdef WITH_LCM_ARMS
