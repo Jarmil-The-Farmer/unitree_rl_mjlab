@@ -546,7 +546,28 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
   # 8) Add shoulder_roll randomization to prevent arm crossing.
   cfg.events["randomize_arm_pose"].params["shoulder_roll_range"] = (0.2, 0.8)
 
-  # 9) Smoothness curriculum: ramp up action_rate and joint_acc penalties
+  # 9) Observation history — stack proprioceptive snapshots so the policy
+  # can infer dynamics (arm inertia, height regime) from recent trajectory.
+  _HISTORY_LENGTH = 5
+  _HISTORY_TERMS = (
+    "base_ang_vel",
+    "projected_gravity",
+    "joint_pos",
+    "joint_vel",
+    "actions",
+  )
+  _CRITIC_EXTRA_HISTORY_TERMS = ("base_lin_vel",)
+  for _group_name, _extras in (
+    ("actor", ()),
+    ("critic", _CRITIC_EXTRA_HISTORY_TERMS),
+  ):
+    _group = cfg.observations[_group_name]
+    _group.history_length = None  # disable group-level override
+    for _term_name in _HISTORY_TERMS + _extras:
+      if _term_name in _group.terms:
+        _group.terms[_term_name].history_length = _HISTORY_LENGTH
+
+  # 10) Smoothness curriculum: ramp up action_rate and joint_acc penalties
   # in later training to eliminate tremor once basic balance is learned.
   cfg.curriculum["action_rate_weight"] = CurriculumTermCfg(
     func=reward_weight,
