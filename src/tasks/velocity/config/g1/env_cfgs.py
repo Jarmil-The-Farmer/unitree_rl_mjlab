@@ -495,6 +495,9 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     viz=UniformVelocityCommandCfg.VizCfg(z_offset=1.15),
   )
 
+  # 0) Keep gait reward and phase observation from base config — helps
+  # the robot learn a periodic walking gait.
+
   # 1) Replace track_linear_velocity with a version that doesn't penalize
   #    z-velocity. The original penalizes vertical motion (2 * z_error²),
   #    which directly conflicts with height changes during squatting.
@@ -515,13 +518,13 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
   #    squatting and arm balance compensation.
   cfg.rewards["stand_still"].weight = 0.0
 
-  # 4) Pose reward: match standing task — sagittal joints completely free,
-  #    lateral joints tight. Robot can squat and lean freely.
+  # 4) Pose reward: sagittal joints completely free, hip_roll slightly
+  #    loosened to allow a modest wider stance (not full asymmetry).
   cfg.rewards["pose"].weight = 0.3
   cfg.rewards["pose"].params["std_standing"] = {
     r".*hip_pitch.*": 10.0,
-    r".*hip_roll.*": 0.08,
-    r".*hip_yaw.*": 0.08,
+    r".*hip_roll.*": 0.15,  # slightly loosened — modest wider stance
+    r".*hip_yaw.*": 0.1,   # keep feet pointing forward
     r".*knee.*": 10.0,
     r".*ankle_pitch.*": 10.0,
     r".*ankle_roll.*": 0.05,
@@ -530,8 +533,8 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     r".*waist_pitch.*": 10.0,
   }
 
-  # 5) Strong upright signal — match standing task.
-  cfg.rewards["body_orientation_l2"].weight = -5.0
+  # 5) Strong upright signal — keeps pelvis/hips level (no sideways lean).
+  cfg.rewards["body_orientation_l2"].weight = -8.0
 
   # 6) Penalize horizontal base velocity when commanded to stand still.
   cfg.rewards["stand_still_lin_vel"] = RewardTermCfg(
@@ -540,8 +543,20 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     params={"command_name": "twist", "command_threshold": 0.1},
   )
 
-  # 7) Hip lateral deviation — match standing task.
-  cfg.rewards["hip_lateral_deviation"].weight = -5.0
+  # 7) Hip lateral deviation — keeps hips symmetric (both legs behave alike).
+  #    Covers hip_roll and hip_yaw to prevent asymmetric leg splay.
+  cfg.rewards["hip_lateral_deviation"].weight = -3.0
+
+  # 7b) Dedicated penalty for waist_roll — prevents sideways lean at the
+  #     waist. Strong weight because torso tilt looks unnatural and is
+  #     rarely necessary for balance (pelvis/leg adjustment should compensate).
+  cfg.rewards["waist_roll_deviation"] = RewardTermCfg(
+    func=joint_deviation_l2,
+    weight=-5.0,
+    params={
+      "asset_cfg": SceneEntityCfg("robot", joint_names=("waist_roll_joint",)),
+    },
+  )
 
   # 8) Add shoulder_roll randomization to prevent arm crossing.
   cfg.events["randomize_arm_pose"].params["shoulder_roll_range"] = (0.2, 0.8)
@@ -575,8 +590,8 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
       "reward_name": "action_rate_l2",
       "weight_stages": [
         {"step": 0,           "weight": -0.05},   # base value
-        {"step": 8000 * 24,   "weight": -0.15},
-        {"step": 15000 * 24,  "weight": -0.3},
+        {"step": 6000 * 24,   "weight": -0.15},
+        {"step": 12000 * 24,  "weight": -0.3},
       ],
     },
   )
@@ -586,8 +601,8 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
       "reward_name": "joint_acc_l2",
       "weight_stages": [
         {"step": 0,           "weight": -2.5e-7},  # base value
-        {"step": 8000 * 24,   "weight": -7.5e-7},
-        {"step": 15000 * 24,  "weight": -1.5e-6},
+        {"step": 6000 * 24,   "weight": -7.5e-7},
+        {"step": 12000 * 24,  "weight": -1.5e-6},
       ],
     },
   )
@@ -596,11 +611,11 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
   # aggressive arm motion in later training.
   cfg.curriculum["standing_balance"].params["stages"] = [
     {"step": 0,           "rel_standing_envs": 0.2, "nudge_speed": 0.3, "nudge_offset_range": (-0.5, 0.5)},
-    {"step": 2000 * 24,   "rel_standing_envs": 0.4, "nudge_speed": 0.5, "nudge_offset_range": (-0.5, 0.5)},
-    {"step": 4000 * 24,   "rel_standing_envs": 0.6, "nudge_speed": 0.8, "nudge_offset_range": (-0.7, 0.7)},
-    {"step": 8000 * 24,   "rel_standing_envs": 0.7, "nudge_speed": 1.2, "nudge_offset_range": (-0.8, 0.8)},
-    {"step": 12000 * 24,  "rel_standing_envs": 0.7, "nudge_speed": 1.8, "nudge_offset_range": (-1.0, 1.0)},
-    {"step": 18000 * 24,  "rel_standing_envs": 0.7, "nudge_speed": 2.5, "nudge_offset_range": (-1.2, 1.2)},
+    {"step": 1500 * 24,   "rel_standing_envs": 0.4, "nudge_speed": 0.5, "nudge_offset_range": (-0.5, 0.5)},
+    {"step": 3000 * 24,   "rel_standing_envs": 0.6, "nudge_speed": 0.8, "nudge_offset_range": (-0.7, 0.7)},
+    {"step": 6000 * 24,   "rel_standing_envs": 0.7, "nudge_speed": 1.2, "nudge_offset_range": (-0.8, 0.8)},
+    {"step": 9000 * 24,   "rel_standing_envs": 0.7, "nudge_speed": 1.8, "nudge_offset_range": (-1.0, 1.0)},
+    {"step": 14000 * 24,  "rel_standing_envs": 0.7, "nudge_speed": 2.5, "nudge_offset_range": (-1.2, 1.2)},
   ]
 
   if play:
