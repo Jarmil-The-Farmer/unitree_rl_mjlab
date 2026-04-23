@@ -2,24 +2,17 @@
 """Range-of-motion kalibrace reálného Unitree G1 vůči MJCF joint_range.
 
 BEZPEČNOST — PŘEČTI PŘED SPUŠTĚNÍM:
-    Skript přepne VŠECHNY klouby do damping módu (kp=0, nízké kd). Robot se
-    nebude držet vlastní silou. Před spuštěním MUSÍŠ robota zavěsit na stojan
-    nebo ho bezpečně posadit. Nohy mají vyšší kd (default 5), takže se
-    nepropadnou okamžitě, ale sám nestojí.
+    Skript přepne VŠECHNY klouby do damping módu (kp=0, kd=1 na všech
+    motorech). Robot se nebude držet vlastní silou. Před spuštěním MUSÍŠ
+    robota zavěsit na stojan nebo ho bezpečně posadit.
 
-Postup:
-    1. Zavěsit / posadit robota.
-    2. `python scripts/calibrate_rom.py --iface <eth_iface>`
-    3. Potvrdit 'y'. Robot přejde do damping módu.
-    4. Rukama pomalu projet každý kloub od jednoho dorazu k druhému.
-    5. Ctrl+C → skript vypíše porovnávací tabulku sim_range vs real_range.
-
-Výstup:
-    Per-kloub tabulka s MJCF rozsahem, reálným dosaženým rozsahem, a flagy:
-        SHORT     — nedošel jsi do krajní polohy (chybí >0.3 rad)
-        OVERSHOOT — reálný kloub šel za MJCF limit (MJCF je špatně nebo
-                    encoder offset)
-        NO_DATA   — motor nehlásí data
+Průchod po kloubech (interactive):
+    Pro každý kloub skript vypíše očekávaný MJCF rozsah a začne live ukazovat
+    aktuální pozici + dosažený min/max. Pohybuj kloubem tam a zpět, potom:
+        Enter   → další kloub
+        s+Enter → přeskočit aktuální kloub (nedostupný / neoznačit)
+        r+Enter → smazat naměřená data aktuálního kloubu a měřit znovu
+        q+Enter → ukončit a vypsat souhrnnou tabulku
 
 Příklad:
     python scripts/calibrate_rom.py --iface enp4s0
@@ -107,14 +100,17 @@ def load_joint_ranges(xml_path: Path) -> dict[str, tuple[float, float]]:
 
 
 @dataclass
-class Tracker:
+class CalibState:
+    """Sdílený stav mezi DDS callbackem, display threadem a main loopem."""
+    current_joint: int = 0
     q_min: list[float] = field(
         default_factory=lambda: [float("+inf")] * G1_NUM_MOTOR
     )
     q_max: list[float] = field(
         default_factory=lambda: [float("-inf")] * G1_NUM_MOTOR
     )
-    q_last: list[float] = field(default_factory=lambda: [0.0] * G1_NUM_MOTOR)
+    q_live: list[float] = field(default_factory=lambda: [0.0] * G1_NUM_MOTOR)
+    skipped: list[bool] = field(default_factory=lambda: [False] * G1_NUM_MOTOR)
     samples: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -122,21 +118,36 @@ class Tracker:
         with self.lock:
             for i in range(G1_NUM_MOTOR):
                 q = positions[i]
+                self.q_live[i] = q
                 if q < self.q_min[i]:
                     self.q_min[i] = q
                 if q > self.q_max[i]:
                     self.q_max[i] = q
-                self.q_last[i] = q
             self.samples += 1
+
+    def reset_joint(self, j: int) -> None:
+        with self.lock:
+            self.q_min[j] = float("+inf")
+            self.q_max[j] = float("-inf")
+            self.skipped[j] = False
+
+    def mark_skipped(self, j: int) -> None:
+        with self.lock:
+            self.skipped[j] = True
 
 
 class G1Calibrator:
     def __init__(
-        self, iface: str, kd_legs: float, kd_waist: float, kd_arms: float
+        self,
+        iface: str,
+        kd_legs: float,
+        kd_waist: float,
+        kd_arms: float,
+        state: CalibState,
     ):
         self.iface = iface
         self.kds = [kd_legs] * 12 + [kd_waist] * 3 + [kd_arms] * 14
-        self.tracker = Tracker()
+        self.state = state
         self.low_state: LowState_ | None = None
         self.mode_machine: int = 0
         self.mode_machine_set = False
@@ -187,13 +198,13 @@ class G1Calibrator:
             self.mode_machine = msg.mode_machine
             self.mode_machine_set = True
         positions = [msg.motor_state[i].q for i in range(G1_NUM_MOTOR)]
-        self.tracker.update(positions)
+        self.state.update(positions)
 
     def start_damping(self) -> None:
         self.running = True
         self.cmd_thread = threading.Thread(target=self._cmd_loop, daemon=True)
         self.cmd_thread.start()
-        print("[DDS] damping mode aktivní (500 Hz) — pohybuj klouby")
+        print("[DDS] damping mode aktivní (500 Hz)")
 
     def _cmd_loop(self) -> None:
         period = 0.002  # 500 Hz
@@ -222,44 +233,85 @@ class G1Calibrator:
         if self.cmd_thread is not None:
             self.cmd_thread.join(timeout=1.0)
 
-    def live_line(self) -> str:
-        q = self.tracker.q_last
-        return (
-            f"samples={self.tracker.samples:>6}  "
-            f"LKnee={q[3]:+.2f} RKnee={q[9]:+.2f}  "
-            f"Waist={q[12]:+.2f}  "
-            f"LShdP={q[15]:+.2f} LElb={q[18]:+.2f}  "
-            f"RShdP={q[22]:+.2f} RElb={q[25]:+.2f}"
+
+def _fmt_rng(lo: float, hi: float) -> str:
+    lo_s = f"{lo:+.2f}" if lo != float("+inf") else "  —  "
+    hi_s = f"{hi:+.2f}" if hi != float("-inf") else "  —  "
+    return f"[{lo_s}, {hi_s}]"
+
+
+def _display_loop(
+    state: CalibState,
+    ranges: dict[str, tuple[float, float]],
+    stop: threading.Event,
+) -> None:
+    """Background thread: 10 Hz rewrite jediné status řádky pro aktuální kloub."""
+    while not stop.is_set():
+        with state.lock:
+            j = state.current_joint
+            q_now = state.q_live[j]
+            q_min = state.q_min[j]
+            q_max = state.q_max[j]
+        name = MOTOR_NAMES[j]
+        sim = ranges.get(name)
+
+        # Vyhodnocení coverage vůči MJCF limitu.
+        lo_mark = hi_mark = "  "
+        miss_str = ""
+        if sim is not None and q_min != float("+inf"):
+            sim_lo, sim_hi = sim
+            reached_lo = q_min - sim_lo   # < 0 = overshoot, > 0 = miss
+            reached_hi = sim_hi - q_max   # < 0 = overshoot, > 0 = miss
+            lo_mark = "✓ " if reached_lo <= 0.1 else "✗ "
+            hi_mark = "✓ " if reached_hi <= 0.1 else "✗ "
+            parts = []
+            if reached_lo > 0.1:
+                parts.append(f"miss_lo={reached_lo:+.2f}")
+            if reached_hi > 0.1:
+                parts.append(f"miss_hi={reached_hi:+.2f}")
+            if reached_lo < -0.05:
+                parts.append(f"over_lo={-reached_lo:.2f}")
+            if reached_hi < -0.05:
+                parts.append(f"over_hi={-reached_hi:.2f}")
+            miss_str = "  " + " ".join(parts) if parts else "  ✓ROZSAH POKRYT"
+
+        line = (
+            f"\r   q={q_now:+.3f}  "
+            f"real={_fmt_rng(q_min, q_max)}  "
+            f"{lo_mark}lo {hi_mark}hi{miss_str}          "
         )
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        time.sleep(0.1)
 
 
 def print_report(
-    tracker: Tracker, ranges: dict[str, tuple[float, float]]
+    state: CalibState, ranges: dict[str, tuple[float, float]]
 ) -> None:
     print()
-    print("=" * 104)
+    print("=" * 108)
     print(
         f"{'idx':>3}  {'joint':<28}  {'sim_range':>18}  "
-        f"{'real_range':>18}  {'miss_lo':>7}  {'miss_hi':>7}  {'flag':<12}"
+        f"{'real_range':>18}  {'miss_lo':>7}  {'miss_hi':>7}  {'flag':<14}"
     )
-    print("-" * 104)
+    print("-" * 108)
     any_flag = False
     for i, name in enumerate(MOTOR_NAMES):
         sim = ranges.get(name)
-        real_lo = tracker.q_min[i]
-        real_hi = tracker.q_max[i]
+        real_lo = state.q_min[i]
+        real_hi = state.q_max[i]
         has_real = real_lo != float("+inf") and real_hi != float("-inf")
 
         flags: list[str] = []
         miss_lo = miss_hi = 0.0
-        if not has_real:
+        if state.skipped[i]:
+            flags.append("SKIPPED")
+        elif not has_real:
             flags.append("NO_DATA")
         elif sim is not None:
             sim_lo, sim_hi = sim
-            # Kolik z MJCF rozsahu jsi nepokryl (na reálu jsi nedošel až k limitu).
             miss_lo = max(0.0, real_lo - sim_lo)
             miss_hi = max(0.0, sim_hi - real_hi)
-            # Přešel jsi za MJCF limit?
             over_lo = max(0.0, sim_lo - real_lo)
             over_hi = max(0.0, real_hi - sim_hi)
             if over_lo > 0.05 or over_hi > 0.05:
@@ -268,17 +320,17 @@ def print_report(
                 flags.append("SHORT")
 
         flag = ",".join(flags) if flags else "ok"
-        if flags:
+        if flags and flags != ["SKIPPED"]:
             any_flag = True
 
         sim_str = f"[{sim[0]:+.2f},{sim[1]:+.2f}]" if sim else "—"
         real_str = f"[{real_lo:+.2f},{real_hi:+.2f}]" if has_real else "—"
         print(
             f"{i:>3}  {name:<28}  {sim_str:>18}  {real_str:>18}  "
-            f"{miss_lo:>7.2f}  {miss_hi:>7.2f}  {flag:<12}"
+            f"{miss_lo:>7.2f}  {miss_hi:>7.2f}  {flag:<14}"
         )
 
-    print("-" * 104)
+    print("-" * 108)
     print(
         "miss_lo / miss_hi [rad] — kolik ses nedostal k dolnímu / hornímu dorazu (vůči MJCF)"
     )
@@ -286,11 +338,14 @@ def print_report(
         "OVERSHOOT — reálný kloub šel za MJCF limit (>0.05 rad) → MJCF joint_range nesedí hw"
     )
     print(
-        "SHORT     — neprojel jsi až k dorazu (>0.3 rad chybí) → opakuj ten kloub"
+        "SHORT     — nedošel jsi až k dorazu (>0.3 rad chybí)"
+    )
+    print(
+        "SKIPPED   — vynechal jsi tento kloub klávesou 's'"
     )
     if not any_flag:
-        print("\n✓ Všechny kloubové rozsahy sedí se simulací.")
-    print(f"\nCelkem vzorků: {tracker.samples}")
+        print("\n✓ Všechny označené klouby sedí se simulací.")
+    print(f"\nCelkem vzorků: {state.samples}")
     print()
 
 
@@ -299,6 +354,68 @@ def confirm(msg: str) -> bool:
         return input(f"{msg} [y/N] ").strip().lower() in ("y", "yes")
     except EOFError:
         return False
+
+
+def _joint_header(idx: int, total: int, name: str,
+                  sim: tuple[float, float] | None) -> None:
+    sim_str = f"[{sim[0]:+.3f}, {sim[1]:+.3f}]" if sim else "—"
+    print()
+    print(f"━━ [{idx + 1:>2}/{total}] {name}")
+    print(f"   sim_range: {sim_str}")
+    print(f"   Pohybuj kloubem tam a zpět až k oběma dorazům.")
+    print(f"   Enter=další  |  r+Enter=reset  |  s+Enter=skip  |  q+Enter=konec")
+
+
+def interactive_walk(
+    state: CalibState, ranges: dict[str, tuple[float, float]]
+) -> None:
+    """Sekvenční průchod kloubů s live displayem a Enter/r/s/q ovládáním."""
+    total = len(MOTOR_NAMES)
+    i = 0
+    while i < total:
+        with state.lock:
+            state.current_joint = i
+        # Reset je explicitní volba — čerstvý průchod začíná s prázdným
+        # min/max pro tento kloub, aby dřívější náhodné dotyky neovlivnily
+        # měření.
+        state.reset_joint(i)
+
+        name = MOTOR_NAMES[i]
+        sim = ranges.get(name)
+        _joint_header(i, total, name, sim)
+
+        display_stop = threading.Event()
+        display_thread = threading.Thread(
+            target=_display_loop, args=(state, ranges, display_stop), daemon=True
+        )
+        display_thread.start()
+
+        try:
+            cmd = input().strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            cmd = "q"
+        finally:
+            display_stop.set()
+            display_thread.join(timeout=0.5)
+            # Přidat newline pod smazanou live řádku.
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+        if cmd == "" or cmd == "n":
+            i += 1
+        elif cmd == "r":
+            # Smažu data a opakuju stejný kloub.
+            continue
+        elif cmd == "s":
+            state.mark_skipped(i)
+            i += 1
+        elif cmd == "q":
+            return
+        elif cmd == "b" and i > 0:
+            i -= 1
+        else:
+            # Neznámý vstup → nic nedělej, opakuj stejný kloub.
+            continue
 
 
 def main() -> int:
@@ -314,10 +431,10 @@ def main() -> int:
         default=str(DEFAULT_MJCF),
         help=f"cesta k g1.xml (default: {DEFAULT_MJCF})",
     )
-    ap.add_argument("--kd-legs", type=float, default=5.0, help="damping nohy (def 5)")
-    ap.add_argument("--kd-waist", type=float, default=3.0, help="damping pás (def 3)")
-    ap.add_argument("--kd-arms", type=float, default=0.5, help="damping paže (def 0.5)")
-    ap.add_argument("--yes", action="store_true", help="přeskočit potvrzení")
+    ap.add_argument("--kd-legs", type=float, default=1.0, help="damping nohy (def 1)")
+    ap.add_argument("--kd-waist", type=float, default=1.0, help="damping pás (def 1)")
+    ap.add_argument("--kd-arms", type=float, default=1.0, help="damping paže (def 1)")
+    ap.add_argument("--yes", action="store_true", help="přeskočit bezpečnostní potvrzení")
     args = ap.parse_args()
 
     mjcf_path = Path(args.mjcf)
@@ -327,7 +444,7 @@ def main() -> int:
     ranges = load_joint_ranges(mjcf_path)
     missing = [n for n in MOTOR_NAMES if n not in ranges]
     if missing:
-        print(f"WARN: tyto klouby chybí v MJCF (reference bude prázdná): {missing}")
+        print(f"WARN: tyto klouby chybí v MJCF (bez reference): {missing}")
 
     print("=" * 70)
     print("BEZPEČNOSTNÍ UPOZORNĚNÍ")
@@ -344,30 +461,25 @@ def main() -> int:
         print("Zrušeno.")
         return 0
 
-    cal = G1Calibrator(args.iface, args.kd_legs, args.kd_waist, args.kd_arms)
+    state = CalibState()
+    cal = G1Calibrator(
+        args.iface, args.kd_legs, args.kd_waist, args.kd_arms, state
+    )
 
-    stop_evt = threading.Event()
-
-    def on_sigint(_sig, _frame):
-        stop_evt.set()
-
-    signal.signal(signal.SIGINT, on_sigint)
+    # Ctrl+C → ukončí input() přes KeyboardInterrupt, který interactive_walk
+    # ošetří jako 'q'. Další Ctrl+C v shutdown sekvenci se ignoruje.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
 
     try:
         cal.init_dds()
         cal.start_damping()
         print()
-        print("Pomalu projeď každý kloub rukama od dorazu k dorazu.")
-        print("Ctrl+C → ukončit a vypsat tabulku.")
-        print()
-        while not stop_evt.is_set():
-            time.sleep(0.3)
-            sys.stdout.write("\r" + cal.live_line() + "    ")
-            sys.stdout.flush()
+        print("Začínáme průchod. Live status se zobrazuje na jedné řádce;")
+        print("tvé klávesy se tam krátce objeví než je přepíše další update.")
+        interactive_walk(state, ranges)
     finally:
         cal.stop()
-        print()
-        print_report(cal.tracker, ranges)
+        print_report(state, ranges)
     return 0
 
 
