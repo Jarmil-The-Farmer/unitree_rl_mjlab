@@ -218,23 +218,50 @@ class StepTester:
         self.cmd_thread.start()
 
     def _cmd_loop(self) -> None:
+        # Static fields: set once, never rewrite.
+        self.low_cmd.mode_pr = 0
+        self.low_cmd.mode_machine = self.mode_machine
+        for i in range(G1_NUM_MOTOR):
+            mc = self.low_cmd.motor_cmd[i]
+            mc.mode = 1
+            mc.dq = 0.0
+            mc.tau = 0.0
+
+        # Cache refs once; avoid repeated attribute lookups in hot loop.
+        motor_cmds = [self.low_cmd.motor_cmd[i] for i in range(G1_NUM_MOTOR)]
+        kp_def = KP_DEFAULT
+        kd_def = KD_DEFAULT
+        pub = self.pub
+        crc = self.crc
+        low_cmd = self.low_cmd
+        kp_scale = self.kp_scale
+        q_target = self.q_target
+
+        # Rate diagnostic.
+        self._cmd_iters = 0
+        self._cmd_last_report = time.perf_counter()
+        self._cmd_rate_hz = 0.0
+
         next_t = time.perf_counter() + CONTROL_DT
         while self.running:
-            self.low_cmd.mode_pr = 0
-            self.low_cmd.mode_machine = self.mode_machine
             for i in range(G1_NUM_MOTOR):
-                mc = self.low_cmd.motor_cmd[i]
-                s = self.kp_scale[i]
-                mc.mode = 1
-                mc.kp = s * KP_DEFAULT[i]
-                mc.kd = s * KD_DEFAULT[i] + (1.0 - s) * KD_DAMPING
-                mc.q = self.q_target[i]
-                mc.dq = 0.0
-                mc.tau = 0.0
-            self.low_cmd.crc = self.crc.Crc(self.low_cmd)
-            if self.pub is not None:
-                self.pub.Write(self.low_cmd)
-            rem = next_t - time.perf_counter()
+                mc = motor_cmds[i]
+                s = kp_scale[i]
+                mc.kp = s * kp_def[i]
+                mc.kd = s * kd_def[i] + (1.0 - s) * KD_DAMPING
+                mc.q = q_target[i]
+            low_cmd.crc = crc.Crc(low_cmd)
+            if pub is not None:
+                pub.Write(low_cmd)
+
+            self._cmd_iters += 1
+            now = time.perf_counter()
+            if now - self._cmd_last_report >= 1.0:
+                self._cmd_rate_hz = self._cmd_iters / (now - self._cmd_last_report)
+                self._cmd_iters = 0
+                self._cmd_last_report = now
+
+            rem = next_t - now
             if rem > 0:
                 time.sleep(rem)
             next_t += CONTROL_DT
@@ -507,7 +534,9 @@ def main() -> int:
             td, tau, q_final = estimate_td_tau(rec)
             print()
             print(f"  ── Výsledek: {name} ──")
-            print(f"    vzorků: {len(rec.t)}")
+            print(f"    vzorků: {len(rec.t)}  (DDS rate ≈ {len(rec.t)/args.hold_time:.0f} Hz)")
+            print(f"    cmd loop rate ≈ {tester._cmd_rate_hz:.0f} Hz  "
+                  f"(target {CONTROL_HZ} Hz)")
             print(f"    q0     = {rec.q0:+.4f} rad")
             print(
                 f"    q_final= {q_final:+.4f} rad  "
@@ -519,6 +548,14 @@ def main() -> int:
                 print(f"    τ      ≈ {tau * 1000:6.1f} ms  (63 % response)")
             else:
                 print("    fit failed — kloub se nepohnul dostatečně")
+
+            # Prvních 15 vzorků — pomáhá rychle vidět tvar odezvy.
+            print("    prvních 15 vzorků (ms, q_rel, q_tgt_rel):")
+            for i in range(min(15, len(rec.t))):
+                q_rel = rec.q[i] - rec.q0
+                qt_rel = rec.q_target[i] - rec.q0
+                print(f"      t={rec.t[i]*1000:6.1f}  "
+                      f"q={q_rel:+.4f}  q_tgt={qt_rel:+.4f}")
 
             csv_path = outdir / f"{idx:02d}_{name}.csv"
             save_csv(csv_path, rec)
