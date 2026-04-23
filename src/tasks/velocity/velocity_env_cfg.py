@@ -271,6 +271,25 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
         "operation": "scale",
       },
     ),
+    "randomize_effort_limits": EventTermCfg(
+      mode="startup",
+      func=dr.effort_limits,
+      params={
+        "asset_cfg": SceneEntityCfg("robot"),
+        "effort_limit_range": (0.9, 1.1),
+        "operation": "scale",
+      },
+    ),
+    # alpha_range=(-0.05, 0.05) → mass and inertia scale by e^(2*alpha)
+    # ≈ [0.905, 1.105], i.e. ±10% jointly on mass + inertia per link.
+    "randomize_link_inertia": EventTermCfg(
+      mode="startup",
+      func=dr.pseudo_inertia,
+      params={
+        "asset_cfg": SceneEntityCfg("robot"),
+        "alpha_range": (-0.05, 0.05),
+      },
+    ),
   }
 
   ##
