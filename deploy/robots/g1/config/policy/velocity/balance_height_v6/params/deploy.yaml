@@ -8,8 +8,12 @@
 # The remaining 14 arm motors are read for observations but NOT commanded.
 joint_ids_map: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28]
 step_dt: 0.02
-stiffness: [40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 28.5, 28.5]
-damping:   [2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 1.8, 1.8]
+# 29 entries: 15 legs/waist + 14 arms. Arms use Kp=40, Kd=5 to match sim
+# (g1_weight_constants.py). Legs/waist values unchanged.
+stiffness: [40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 28.5, 28.5,
+            40, 40, 40, 40, 40, 40, 40,  40, 40, 40, 40, 40, 40, 40]
+damping:   [2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 1.8, 1.8,
+            5, 5, 5, 5, 5, 5, 5,  5, 5, 5, 5, 5, 5, 5]
 # default_joint_pos: 29 entries matching joint_ids_map order.
 # [0-14] legs/waist = 0, [15-21] left arm, [22-28] right arm.
 default_joint_pos: [

@@ -22,9 +22,10 @@ namespace {
 constexpr int ARM_JOINT_START = 15;
 constexpr int NUM_ARM_JOINTS = 14;
 
-// Arm gains matching FixStand config defaults
-constexpr float ARM_KP = 40.0f;
-constexpr float ARM_KD = 10.0f;
+// Fallback arm gains used only when the deploy.yaml stiffness/damping arrays
+// cover only legs/waist (<29 entries). New configs should include all 29 joints.
+constexpr float ARM_KP_FALLBACK = 40.0f;
+constexpr float ARM_KD_FALLBACK = 10.0f;
 
 struct ArmReceiver {
     lcm::LCM lcm;
@@ -190,12 +191,23 @@ void State_RLBase::run()
 
 #ifdef WITH_LCM_ARMS
     if (g_arm_receiver) {
+        // Prefer gains from deploy.yaml (stiffness/damping arrays covering all 29
+        // joints). Fall back to hardcoded values for legacy configs with only
+        // 15 entries.
+        const auto& kp_arr = env->robot->data.joint_stiffness;
+        const auto& kd_arr = env->robot->data.joint_damping;
+        const bool use_cfg_gains = (kp_arr.size() >= ARM_JOINT_START + NUM_ARM_JOINTS)
+                                && (kd_arr.size() >= ARM_JOINT_START + NUM_ARM_JOINTS);
+
         // Set arm joint gains (keeps arms active even before first LCM message)
         for (int i = 0; i < NUM_ARM_JOINTS; ++i) {
-            lowcmd->msg_.motor_cmd()[ARM_JOINT_START + i].kp() = ARM_KP;
-            lowcmd->msg_.motor_cmd()[ARM_JOINT_START + i].kd() = ARM_KD;
-            lowcmd->msg_.motor_cmd()[ARM_JOINT_START + i].dq() = 0;
-            lowcmd->msg_.motor_cmd()[ARM_JOINT_START + i].tau() = 0;
+            const int idx = ARM_JOINT_START + i;
+            const float kp = use_cfg_gains ? kp_arr[idx] : ARM_KP_FALLBACK;
+            const float kd = use_cfg_gains ? kd_arr[idx] : ARM_KD_FALLBACK;
+            lowcmd->msg_.motor_cmd()[idx].kp() = kp;
+            lowcmd->msg_.motor_cmd()[idx].kd() = kd;
+            lowcmd->msg_.motor_cmd()[idx].dq() = 0;
+            lowcmd->msg_.motor_cmd()[idx].tau() = 0;
         }
 
         // Apply LCM arm positions (arms stay at FixStand position until first message)
