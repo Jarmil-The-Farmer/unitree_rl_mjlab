@@ -110,6 +110,11 @@ def randomize_arm_pose(
       joint_pos[:, i] = el
     # Other arm joints (shoulder_yaw, wrist) stay at 0.
 
+  # Clamp to soft joint limits so reachable-range MJCF edits (e.g. shoulder_roll)
+  # are respected even if the caller passes a wider range than the hardware.
+  limits = asset.data.soft_joint_pos_limits[env_ids][:, asset_cfg.joint_ids]
+  joint_pos = torch.clamp(joint_pos, limits[:, :, 0], limits[:, :, 1])
+
   joint_vel = torch.zeros_like(joint_pos)
 
   asset.write_joint_state_to_sim(

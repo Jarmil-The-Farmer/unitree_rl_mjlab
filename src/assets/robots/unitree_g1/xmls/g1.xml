@@ -174,7 +174,7 @@
               <geom class="visual" mesh="left_shoulder_pitch_link"/>
               <body name="left_shoulder_roll_link" pos="0 0.038 -0.013831" quat="0.990268 -0.139172 0 0">
                 <inertial pos="-0.000227 0.00727 -0.063243" quat="0.701256 -0.0196223 -0.00710317 0.712604" mass="0.643" diaginertia="0.000691311 0.000618011 0.000388977"/>
-                <joint name="left_shoulder_roll_joint" axis="1 0 0" range="-1.5882 2.2515"/>
+                <joint name="left_shoulder_roll_joint" axis="1 0 0" range="-0.15 2.2515"/>
                 <geom class="visual" mesh="left_shoulder_roll_link"/>
                 <body name="left_shoulder_yaw_link" pos="0 0.00624 -0.1032">
                   <inertial pos="0.010773 -0.002949 -0.072009" quat="0.716879 -0.0964829 -0.0679942 0.687134" mass="0.734" diaginertia="0.00106187 0.00103217 0.000400661"/>
@@ -215,7 +215,7 @@
               <geom class="visual" mesh="right_shoulder_pitch_link"/>
               <body name="right_shoulder_roll_link" pos="0 -0.038 -0.013831" quat="0.990268 0.139172 0 0">
                 <inertial pos="-0.000227 -0.00727 -0.063243" quat="0.712604 -0.00710317 -0.0196223 0.701256" mass="0.643" diaginertia="0.000691311 0.000618011 0.000388977"/>
-                <joint name="right_shoulder_roll_joint" axis="1 0 0" range="-2.2515 1.5882"/>
+                <joint name="right_shoulder_roll_joint" axis="1 0 0" range="-2.2515 0.15"/>
                 <geom class="visual" mesh="right_shoulder_roll_link"/>
                 <body name="right_shoulder_yaw_link" pos="0 -0.00624 -0.1032">
                   <inertial pos="0.010773 0.002949 -0.072009" quat="0.687134 -0.0679942 -0.0964829 0.716879" mass="0.734" diaginertia="0.00106187 0.00103217 0.000400661"/>
