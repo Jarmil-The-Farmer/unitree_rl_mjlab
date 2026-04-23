@@ -60,10 +60,14 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
       func=mdp.builtin_sensor,
       params={"sensor_name": "robot/imu_ang_vel"},
       noise=Unoise(n_min=-0.2, n_max=0.2),
+      delay_min_lag=0,
+      delay_max_lag=2,
     ),
     "projected_gravity": ObservationTermCfg(
       func=mdp.projected_gravity,
       noise=Unoise(n_min=-0.05, n_max=0.05),
+      delay_min_lag=0,
+      delay_max_lag=2,
     ),
     "command": ObservationTermCfg(
       func=mdp.generated_commands,
@@ -76,10 +80,14 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     "joint_pos": ObservationTermCfg(
       func=mdp.joint_pos_rel,
       noise=Unoise(n_min=-0.01, n_max=0.01),
+      delay_min_lag=0,
+      delay_max_lag=2,
     ),
     "joint_vel": ObservationTermCfg(
       func=mdp.joint_vel_rel,
       noise=Unoise(n_min=-1.5, n_max=1.5),
+      delay_min_lag=0,
+      delay_max_lag=2,
     ),
     "actions": ObservationTermCfg(func=mdp.last_action),
     "height_scan": ObservationTermCfg(
@@ -251,6 +259,16 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
           1: (-0.025, 0.025),
           2: (-0.03, 0.03),
         },
+      },
+    ),
+    "randomize_pd_gains": EventTermCfg(
+      mode="startup",
+      func=dr.pd_gains,
+      params={
+        "asset_cfg": SceneEntityCfg("robot"),
+        "kp_range": (0.9, 1.1),
+        "kd_range": (0.8, 1.2),
+        "operation": "scale",
       },
     ),
   }
