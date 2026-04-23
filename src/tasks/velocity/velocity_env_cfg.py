@@ -280,14 +280,16 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
         "operation": "scale",
       },
     ),
-    # alpha_range=(-0.05, 0.05) → mass and inertia scale by e^(2*alpha)
-    # ≈ [0.905, 1.105], i.e. ±10% jointly on mass + inertia per link.
-    "randomize_link_inertia": EventTermCfg(
+    # dr.body_mass only scales mass (not inertia) — not fully physics-consistent
+    # but works with models containing helper bodies that have mass=0 (Inspire
+    # fingers, sensor mounts) where pseudo_inertia's Cholesky fails.
+    "randomize_link_mass": EventTermCfg(
       mode="startup",
-      func=dr.pseudo_inertia,
+      func=dr.body_mass,
       params={
         "asset_cfg": SceneEntityCfg("robot"),
-        "alpha_range": (-0.05, 0.05),
+        "ranges": (0.9, 1.1),
+        "operation": "scale",
       },
     ),
   }
