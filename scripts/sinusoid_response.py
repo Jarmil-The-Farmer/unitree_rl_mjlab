@@ -279,25 +279,61 @@ def main() -> int:
 
     # ── Souhrnná tabulka ──
     if results:
+        # Phase unwrap: causal system má monotonicky klesající phase.
+        # atan2 vrací v (−π, π], takže nad 180° lag wrapuje na +π → −π.
+        # Sledujeme trend: pokud další phase > předchozí + π/2, subtract 2π.
+        results_sorted = sorted(results, key=lambda r: r[0])
+        phase_unwrapped = []
+        last = None
+        accum = 0.0
+        for f, _, a in results_sorted:
+            p = a["phase_lag_rad"]
+            if last is not None:
+                # Unwrap direction: fázový lag by měl ROST (být víc positive)
+                # s frekvencí. Pokud skočí dolů o > π, přidáváme 2π.
+                while p + accum < last - math.pi:
+                    accum += 2 * math.pi
+                while p + accum > last + math.pi:
+                    accum -= 2 * math.pi
+            p_uw = p + accum
+            phase_unwrapped.append(p_uw)
+            last = p_uw
+
         print()
-        print("═" * 88)
+        print("═" * 96)
         print(f" Sinusoid frequency response — {joint_name}")
         print(f" Kp={KP_DEFAULT[args.joint]}, Kd={KD_DEFAULT[args.joint]}, "
               f"amplitude=±{args.amplitude} rad")
         print(f" cmd loop ≈ {tester._cmd_rate_hz:.0f} Hz")
-        print("═" * 88)
-        print(f" {'f (Hz)':>8} {'A_ratio':>8} {'|H| [dB]':>10} {'phase (°)':>10} "
-              f"{'delay (ms)':>12} {'R²':>6} {'n_fit':>7}")
-        print("─" * 88)
-        for f, rec, a in results:
+        print("═" * 96)
+        print(f" {'f (Hz)':>8} {'A_ratio':>8} {'|H|[dB]':>9} "
+              f"{'phase(°)':>10} {'unwrap(°)':>10} {'delay(ms)':>10} "
+              f"{'R²':>6} {'n_fit':>7}")
+        print("─" * 96)
+        for (f, rec, a), p_uw in zip(results_sorted, phase_unwrapped):
             a_ratio = a["A_ratio"]
             dB = 20.0 * math.log10(max(a_ratio, 1e-6))
+            omega = 2.0 * math.pi * f
+            delay_uw_ms = p_uw / omega * 1000.0 if omega > 0 else 0.0
             print(
-                f" {f:>8.2f} {a_ratio:>8.3f} {dB:>10.2f} "
+                f" {f:>8.2f} {a_ratio:>8.3f} {dB:>9.2f} "
                 f"{math.degrees(a['phase_lag_rad']):>+10.1f} "
-                f"{a['delay_ms']:>+12.1f} {a['r_squared']:>6.3f} {a['n_fit']:>7}"
+                f"{math.degrees(p_uw):>+10.1f} "
+                f"{delay_uw_ms:>+10.1f} "
+                f"{a['r_squared']:>6.3f} {a['n_fit']:>7}"
             )
-        print("─" * 88)
+        print("─" * 96)
+        # Varování pro A_ratio pod prahem ale R² vysoké → šum fit.
+        low_amp = [r for r in results if r[2]["A_ratio"] < 0.05]
+        if low_amp:
+            print(
+                f" ⚠ {len(low_amp)} frekvence mají A_ratio < 0.05 (0.3°) — "
+                "motor nereaguje, data jsou šum."
+            )
+            print(
+                "   Zvyš --amplitude (např. 0.2-0.5) pro friction-dominated "
+                "klouby jako ankle."
+            )
         # Identifikovat bandwidth (A_ratio = 0.707, -3 dB).
         bw = None
         for i in range(len(results) - 1):
