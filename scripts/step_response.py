@@ -338,46 +338,79 @@ class StepTester:
             self.cmd_thread.join(timeout=1.0)
 
 
-def estimate_td_tau(
-    rec: Record,
-) -> tuple[float | None, float | None, float]:
-    """Odhadni dead-time (td) a časovou konstantu (τ) ze step response.
+def _crossing_time(
+    rec: Record, threshold: float, increasing: bool
+) -> float | None:
+    """První čas, kdy q překročí threshold (rostoucí nebo klesající)."""
+    for i, q in enumerate(rec.q):
+        if increasing and q >= threshold:
+            return rec.t[i]
+        if not increasing and q <= threshold:
+            return rec.t[i]
+    return None
 
-    Vrací (td, tau, q_final). Oboje v sekundách. q_final je průměr posledních
-    10 % dat. td = čas do překročení 10 % response threshold; τ = čas od td
-    do 63 % response.
+
+def analyze_response(rec: Record) -> dict:
+    """Bohatší analýza step response.
+
+    Vrací dict s klíči:
+      q_final  — průměr posledních 10 % vzorků
+      undershoot — q_final - (q0 + amplitude) (v rad; 0 = trefa)
+      t10,t50,t63,t90 — absolute time od record startu do překročení n%
+      td        — dead-time odhad (= t10 - 0.105·τ pro 1. řád)
+      tau       — τ odhad z (t63 - t10) / 0.895 (konzistence 1. řádu)
+      tau_alt   — alternativní τ z (t90 - t50) / 1.61 (pro cross-check)
+      first_order_quality — |tau - tau_alt| / tau (0 = perfektní 1. řád)
     """
+    out: dict = {
+        "q_final": rec.q0,
+        "undershoot": 0.0,
+        "t10": None, "t50": None, "t63": None, "t90": None,
+        "td": None, "tau": None, "tau_alt": None,
+        "first_order_quality": None,
+    }
     if not rec.t:
-        return None, None, rec.q0
+        return out
 
-    # q_final = průměr posledních 10 % vzorků.
     n = len(rec.q)
     tail_n = max(1, n // 10)
     q_final = sum(rec.q[-tail_n:]) / tail_n
+    out["q_final"] = q_final
+    out["undershoot"] = q_final - (rec.q0 + rec.amplitude)
 
     total_response = q_final - rec.q0
-    if abs(total_response) < 1e-3:
-        return None, None, q_final
+    if abs(total_response) < 5e-4:
+        return out
 
-    # td: první bod kde |q - q0| > 10 % response.
-    thr_td = rec.q0 + 0.1 * total_response
-    thr_63 = rec.q0 + 0.63 * total_response
+    inc = total_response > 0
+    for frac, key in [(0.10, "t10"), (0.50, "t50"),
+                      (0.632, "t63"), (0.90, "t90")]:
+        thr = rec.q0 + frac * total_response
+        out[key] = _crossing_time(rec, thr, inc)
 
-    td = tau_candidate = None
-    for i, q in enumerate(rec.q):
-        if td is None:
-            if (total_response > 0 and q >= thr_td) or (
-                total_response < 0 and q <= thr_td
-            ):
-                td = rec.t[i]
-        if td is not None:
-            if (total_response > 0 and q >= thr_63) or (
-                total_response < 0 and q <= thr_63
-            ):
-                tau_candidate = rec.t[i] - td
-                break
+    t10, t63 = out["t10"], out["t63"]
+    t50, t90 = out["t50"], out["t90"]
 
-    return td, tau_candidate, q_final
+    # 1. řád s dead-time: q(t) = q_inf - (q_inf-q0)·exp(-(t-td)/τ)
+    # Frakce f v čase t - td:  1 - exp(-(t-td)/τ) = f → t-td = -ln(1-f)·τ
+    # -ln(0.9) = 0.1054;  -ln(0.368) = 1.000;  -ln(0.1) = 2.303;  -ln(0.5) = 0.693
+    # t63 - t10 = (1.000 - 0.105)·τ = 0.895·τ  → τ = (t63-t10)/0.895
+    # td = t10 - 0.105·τ
+    if t10 is not None and t63 is not None:
+        tau = (t63 - t10) / 0.895
+        if tau > 0:
+            out["tau"] = tau
+            out["td"] = t10 - 0.105 * tau
+    if t50 is not None and t90 is not None:
+        tau_alt = (t90 - t50) / 1.610
+        if tau_alt > 0:
+            out["tau_alt"] = tau_alt
+
+    if out["tau"] is not None and out["tau_alt"] is not None:
+        out["first_order_quality"] = (
+            abs(out["tau"] - out["tau_alt"]) / max(out["tau"], out["tau_alt"])
+        )
+    return out
 
 
 def save_csv(path: Path, rec: Record) -> None:
@@ -439,8 +472,26 @@ def main() -> int:
         default="step_response_logs",
         help="adresář pro CSV (def step_response_logs)",
     )
+    ap.add_argument(
+        "--amplitudes",
+        default=None,
+        help="čárkou oddělené amplitudy pro sweep (např. '0.02,0.05,0.1,0.15'). "
+             "Pokud je nastaveno, --amplitude se ignoruje.",
+    )
+    ap.add_argument(
+        "--pre-wait",
+        type=float,
+        default=0.5,
+        help="čas po ramp-up před step [s] (def 0.5) — testuje firmware "
+             "startup transient. Zvyš na 2-3 pokud td klesá s delším čekáním.",
+    )
     ap.add_argument("--yes", action="store_true", help="přeskočit potvrzení")
     args = ap.parse_args()
+
+    if args.amplitudes:
+        amplitudes = [float(x) for x in args.amplitudes.split(",")]
+    else:
+        amplitudes = [args.amplitude]
 
     print("=" * 70)
     print("BEZPEČNOSTNÍ UPOZORNĚNÍ — STEP RESPONSE TEST")
@@ -500,29 +551,52 @@ def main() -> int:
             print(f"\nKloub: {name}  (index {idx})")
             print(
                 f"  Kp={KP_DEFAULT[idx]}, Kd={KD_DEFAULT[idx]}  "
-                f"amplitude={args.amplitude:+.3f} rad"
+                f"amplitudes={amplitudes} rad  pre_wait={args.pre_wait:.2f}s"
             )
             if not confirm("Spustit test?"):
                 continue
 
             try:
-                # A) Fade in PD on all joints (hold current pose).
+                # A) Fade in PD na všech kloubech (hold current pose).
                 tester.hold_current_positions()
-                print("  [1/4] ramp up PD...")
+                print("  [ramp] ramp up PD...")
                 tester.ramp_all_pd(0.0, 1.0, args.ramp_time)
 
-                # B) Step + record.
-                print(f"  [2/4] step + hold {args.hold_time:.1f}s...")
-                rec = tester.step_test(idx, args.amplitude, args.hold_time)
+                # A2) Pre-wait: dej firmware čas aby se ustálil po změně kp.
+                if args.pre_wait > 0:
+                    print(f"  [wait] settling {args.pre_wait:.2f}s...")
+                    time.sleep(args.pre_wait)
 
-                # C) Slow return to q0.
-                with tester.state_lock:
-                    q_after = tester.q_real[idx]
-                print(f"  [3/4] slow return ({args.return_time:.1f}s)...")
-                tester.slow_return(idx, q_after, rec.q0, args.return_time)
+                sweep_results = []
+                for k, amp in enumerate(amplitudes):
+                    print(f"\n  ── sweep {k+1}/{len(amplitudes)}: amplitude = "
+                          f"{amp:+.3f} rad ({math.degrees(amp):+.1f}°) ──")
+
+                    # Step + record.
+                    print(f"    step + hold {args.hold_time:.1f}s...")
+                    rec = tester.step_test(idx, amp, args.hold_time)
+
+                    # Slow return to q0.
+                    with tester.state_lock:
+                        q_after = tester.q_real[idx]
+                    print(f"    slow return ({args.return_time:.1f}s)...")
+                    tester.slow_return(idx, q_after, rec.q0, args.return_time)
+
+                    # Mezi kroky malá pauza aby se motor ustálil.
+                    if k < len(amplitudes) - 1:
+                        time.sleep(args.pre_wait)
+
+                    # Analysis.
+                    a = analyze_response(rec)
+                    sweep_results.append((amp, rec, a))
+
+                    # Save CSV per amplitude.
+                    csv_name = f"{idx:02d}_{name}_amp{amp:+.3f}.csv"
+                    csv_path = outdir / csv_name
+                    save_csv(csv_path, rec)
 
                 # D) Fade out PD.
-                print("  [4/4] ramp down PD...")
+                print("\n  [ramp] ramp down PD...")
                 tester.ramp_all_pd(1.0, 0.0, args.ramp_time)
 
             except KeyboardInterrupt:
@@ -530,36 +604,62 @@ def main() -> int:
                 tester.emergency_damping()
                 break
 
-            # Analysis.
-            td, tau, q_final = estimate_td_tau(rec)
+            # Comparison table.
             print()
-            print(f"  ── Výsledek: {name} ──")
-            print(f"    vzorků: {len(rec.t)}  (DDS rate ≈ {len(rec.t)/args.hold_time:.0f} Hz)")
-            print(f"    cmd loop rate ≈ {tester._cmd_rate_hz:.0f} Hz  "
-                  f"(target {CONTROL_HZ} Hz)")
-            print(f"    q0     = {rec.q0:+.4f} rad")
+            print(f"  ══ Sweep summary: {name} ══")
+            print(f"    cmd loop {tester._cmd_rate_hz:.0f} Hz / "
+                  f"DDS {len(sweep_results[0][1].t)/args.hold_time:.0f} Hz")
+            print(f"    Kp={KP_DEFAULT[idx]}, Kd={KD_DEFAULT[idx]}")
+            print()
+            print("    " + "─" * 100)
             print(
-                f"    q_final= {q_final:+.4f} rad  "
-                f"(target {rec.q0 + args.amplitude:+.4f}, "
-                f"error {q_final - rec.q0 - args.amplitude:+.4f})"
+                f"    {'amp':>8}  {'q_final':>8}  {'under':>7}  "
+                f"{'t10':>6}  {'t50':>6}  {'t63':>6}  {'t90':>6}  "
+                f"{'td':>6}  {'τ':>6}  {'τ_alt':>6}  {'1st_ord':>7}"
             )
-            if td is not None and tau is not None:
-                print(f"    td     ≈ {td * 1000:6.1f} ms  (dead-time)")
-                print(f"    τ      ≈ {tau * 1000:6.1f} ms  (63 % response)")
-            else:
-                print("    fit failed — kloub se nepohnul dostatečně")
+            print(
+                f"    {'(rad)':>8}  {'(rad)':>8}  {'(rad)':>7}  "
+                f"{'(ms)':>6}  {'(ms)':>6}  {'(ms)':>6}  {'(ms)':>6}  "
+                f"{'(ms)':>6}  {'(ms)':>6}  {'(ms)':>6}  {'err %':>7}"
+            )
+            print("    " + "─" * 100)
+            for amp, rec, a in sweep_results:
+                def _ms(v): return f"{v*1000:>6.1f}" if v is not None else "   —  "
+                foq = (f"{a['first_order_quality']*100:>6.1f}%"
+                       if a["first_order_quality"] is not None else "   — ")
+                print(
+                    f"    {amp:>+8.3f}  {a['q_final']:>+8.4f}  "
+                    f"{a['undershoot']:>+7.4f}  "
+                    f"{_ms(a['t10'])}  {_ms(a['t50'])}  {_ms(a['t63'])}  "
+                    f"{_ms(a['t90'])}  {_ms(a['td'])}  {_ms(a['tau'])}  "
+                    f"{_ms(a['tau_alt'])}  {foq:>7}"
+                )
+            print("    " + "─" * 100)
+            print(
+                "    Čtení: td = dead-time, τ = časová konstanta (z t10↔t63),"
+                " τ_alt (z t50↔t90)"
+            )
+            print(
+                "    1st_ord err = |τ - τ_alt| / max; <10 % ~ 1. řád, >30 % ~"
+                " jiná dynamika"
+            )
+            print(
+                "    Pokud td ROSTE s amplitudou → rate limiter. Pokud KONSTANT"
+                "Í → low-pass filter."
+            )
 
-            # Prvních 15 vzorků — pomáhá rychle vidět tvar odezvy.
-            print("    prvních 15 vzorků (ms, q_rel, q_tgt_rel):")
-            for i in range(min(15, len(rec.t))):
-                q_rel = rec.q[i] - rec.q0
-                qt_rel = rec.q_target[i] - rec.q0
-                print(f"      t={rec.t[i]*1000:6.1f}  "
-                      f"q={q_rel:+.4f}  q_tgt={qt_rel:+.4f}")
-
-            csv_path = outdir / f"{idx:02d}_{name}.csv"
-            save_csv(csv_path, rec)
-            print(f"    CSV    : {csv_path}")
+            # Prvních 15 vzorků pro POSLEDNÍ amplitudu — zahrnout dq ať vidíme
+            # jestli motor se hýbe i když q ještě nedala znamení.
+            _, last_rec, _ = sweep_results[-1]
+            print()
+            print(f"    Prvních 15 vzorků (amp={sweep_results[-1][0]:+.3f}):")
+            print(f"    {'t[ms]':>6}  {'q_rel':>8}  {'dq':>8}  {'q_tgt':>8}")
+            for i in range(min(15, len(last_rec.t))):
+                q_rel = last_rec.q[i] - last_rec.q0
+                qt_rel = last_rec.q_target[i] - last_rec.q0
+                print(f"    {last_rec.t[i]*1000:>6.1f}  "
+                      f"{q_rel:>+8.4f}  {last_rec.dq[i]:>+8.4f}  "
+                      f"{qt_rel:>+8.4f}")
 
     finally:
         print("\n[shutdown] ramp down PD → damping...")
