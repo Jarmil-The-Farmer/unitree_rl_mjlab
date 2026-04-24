@@ -13,9 +13,10 @@ provedené úpravy a zbývající otevřené body.
   odstraněn**).
 - **Domain randomization**: přidáno PD gain, effort_limit, link mass,
   observation delay, encoder bias, foot friction, base COM.
-- **Hlavní zbývající gap**: **firmware setpoint filter / smoother o ~200 ms**.
-  A_ratio v sinusoid testu sedí sim vs real, ale delay gap je ~200 ms
-  konstantní napříč kloubu a frekvencemi.
+- **Operační sim-to-real delay gap je ~30-60 ms** v běžném pásmu (1-2 Hz).
+  Na velmi nízkých frekvencích (0.3 Hz) ~100 ms. Podstatně menší než
+  první Python měření naznačovala — Python timing měl artefakty ~150 ms
+  na reálu (ne v simu); C++ verze testu potvrdila skutečné hodnoty.
 
 ---
 
@@ -72,9 +73,11 @@ eventy (nad rámec původních `foot_friction`, `encoder_bias`, `base_com`):
 Plus **observation delay** na senzorických obs (gyro, proj_grav, joint_pos,
 joint_vel): `delay_min_lag=0, delay_max_lag=2` (0–40 ms @ 50 Hz).
 
-> **Otevřený bod**: sinusoid měření ukazuje ~200 ms reálný delay — to je 5×
-> víc než sim aktuálně randomizuje. Doporučeno zvýšit `delay_max_lag` na
-> 8–10, viz sekce 3.
+> **Aktualizace po C++ měření**: sinusoid gap v operačním pásmu (1-2 Hz)
+> je jen 20-35 ms — **aktuální `delay_max_lag=2` (40 ms) je dostatečný**.
+> Python původně ukazoval ~200 ms gap, ale to byl artefakt Python
+> timing/threading na reálu (v simu Python funguje správně). C++ verze
+> testu potvrdila, že skutečný gap je malý.
 
 ---
 
@@ -166,7 +169,54 @@ python scripts/sinusoid_response.py --iface lo --joint 0 \
   damping. Sim to reprodukuje správně.
 - Delay gap opět ~200 ms.
 
-### 3.3 Interpretace
+### 3.3 Python delay artefakt — ověřeno C++ verzí
+
+Po podezření že Python ukazuje nerealistické hodnoty byl napsán C++
+test [`scripts/cpp/sinusoid_response.cpp`](../scripts/cpp/sinusoid_response.cpp) používající identický
+DDS stack jako deploy binary. Výsledky ukazují **jiný příběh**:
+
+**Srovnání Python vs C++ na identickém hardwaru (ankle, amp=0.15):**
+
+| Zdroj | Avg delay (≤2 Hz) |
+|---|---|
+| Python sim | 73 ms |
+| **C++ sim** | 72 ms (shoda) |
+| Python real | 287 ms |
+| **C++ real** | 124-134 ms |
+
+Python na reálu přidával ~150 ms artefakt (Python cmd thread běžel jen
+~450 Hz vs C++ 500 Hz + GIL contention mezi cmd thread a DDS callback
+→ systematicky pozdní timestampy vzorků). V simu Python funguje OK,
+protože `lo` interface má nižší overhead.
+
+**Skutečný sim-to-real gap (z C++ dat):**
+
+Ankle pitch (index 4, amp=0.15):
+
+| f (Hz) | Sim delay | Real delay | Gap |
+|---|---|---|---|
+| 0.3 | 106 ms | 222 ms | 116 ms |
+| 0.5 | 78 ms | 146 ms | 68 ms |
+| 1.0 | 65 ms | 99 ms | 34 ms |
+| 1.5 | 58 ms | 82 ms | 24 ms |
+| 2.0 | 55 ms | 72 ms | 17 ms |
+
+Hip pitch (index 0, amp=0.15):
+
+| f (Hz) | Sim delay | Real delay | Gap |
+|---|---|---|---|
+| 0.3 | 84 ms | 115 ms | 31 ms |
+| 0.5 | 75 ms | 99 ms | 24 ms |
+| 1.0 | 91 ms | 115 ms | 24 ms |
+| 1.5 | 138 ms | 143 ms | 5 ms |
+| 2.0 | 123 ms | 110 ms | -13 ms |
+
+**V operačním pásmu 1-2 Hz (walking) je gap 15-35 ms** → pokryto
+aktuálním `delay_max_lag=2` (0-40 ms). Hip je téměř dokonale matched
+(gap 15 ms avg), ankle má trochu víc na nízkých f (pravděpodobně
+parallel linkage compliance), ale v operaci ne relevantní.
+
+### 3.4 Interpretace
 
 **A_ratio (amplituda) sedí mezi simem a reálem** → fyzika modelu je
 **správná**. Konkrétně:
@@ -175,50 +225,45 @@ python scripts/sinusoid_response.py --iface lo --joint 0 \
 - Resonanční frekvence sedí
 - Ankle flat attenuace je fyzika, ne friction artefakt
 
-**Delay gap ~200 ms konstantně** napříč klouby a frekvencemi → **firmware
-setpoint filter / smoother**. Pravděpodobný mechanismus:
-- Unitree HG firmware má interní low-pass nebo trajectory planner na
-  `motor_cmd.q` target
-- Time constant 100–200 ms
-- Aplikuje se nezávisle na mechanické dynamice kloubu
-- Není v MJCF / MJLab modelu (není to vlastnost motoru ani linku, je to
-  firmware layer)
+**Delay gap je malý** (~30 ms v operačním pásmu). Firmware pravděpodobně
+přidává krátký low-pass filter na setpoint, ale nic dramatického.
 
-**Důsledek**: policy trénovaná bez modelu tohoto delay uvidí na reálu
-akce s ~200 ms zpožděním, které v simu nezažila.
+**Důsledek**: policy trénovaná s `delay_max_lag=2` (40 ms) pokryje
+realitu v běžném operačním pásmu. Žádné zvyšování DR delay není
+potřeba.
 
 ---
 
 ## 4. Co přidat/upravit dál
 
-### Hlavní doporučení: zvětšit observation / action delay v tréninku
+### Aktuální stav je OK
 
-Současný `delay_max_lag=2` (0–40 ms) pokrývá ~20 % reálného delay. Pro
-pokrytí ~200 ms firmware filteru doporučuji:
+Po C++ verifikaci testu se ukázalo, že **současné nastavení DR
+dostatečně pokrývá realitu** v operačním pásmu:
 
-```python
-# src/tasks/velocity/velocity_env_cfg.py, actor observations:
-delay_min_lag=2,    # minimum 40 ms (DDS + smoothing baseline)
-delay_max_lag=10,   # maximum 200 ms (firmware filter worst case)
-```
+- `delay_max_lag=2` (0-40 ms) ~ reálný gap 20-35 ms v 1-2 Hz pásmu ✓
+- `pd_gains` scale [0.9, 1.1] ~ firmware variability ✓
+- `effort_limits` scale [0.9, 1.1] ~ motor torque variace ✓
+- `body_mass` scale [0.9, 1.1] ~ URDF inertia nepřesnosti ✓
+- `foot_friction`, `encoder_bias`, `base_com` ~ contact + kalibrace ✓
 
-Platí pro `base_ang_vel`, `projected_gravity`, `joint_pos`, `joint_vel`.
-Pokryje celé pozorované rozpětí a policy se naučí robustnosti vůči
-stale observacím.
+### Friction DR NEPOTŘEBNÝ
 
-### Friction DR je NEPOTŘEBNÝ
-
-Původně odhadovaný 5–8× friction mismatch u ankle byl **chybný
-wniosek** — sim potvrdil stejné plochý A_ratio, takže MJCF `frictionloss=0.3`
+Původně odhadovaný 5–8× friction mismatch u ankle byl **chybný závěr**
+— sim potvrdil stejný plochý A_ratio, takže MJCF `frictionloss=0.3`
 Nm je v pořádku.
 
-### Action-side delay (volitelný krok)
+### Volitelně: mírné zvýšení `delay_max_lag` na 4
 
-Alternativně místo observation delay lze wrapnout aktuátory do
-`DelayedActuatorCfg` s `delay_max_lag` ekvivalentním. Z pohledu policy
-(observation + action) je efekt podobný — end-to-end latence je stejná.
-Observation delay je ale méně invazivní (nemění aktuátorovou
-konfiguraci v `g1_constants.py`).
+Pokud chceš malou bezpečnostní marži (např. pro velmi pomalé signály
+kde je gap ~100 ms), lze posunout na:
+
+```python
+delay_min_lag=0,
+delay_max_lag=4,  # 0-80 ms
+```
+
+Ale není to nutné — aktuální `=2` je z empirických měření dostatečný.
 
 ---
 
@@ -247,5 +292,9 @@ deploy/robots/g1/config/policy/velocity/balance_height_v6/params/deploy.yaml
 scripts/calibrate_rom.py          # nový
 scripts/step_response.py          # nový
 scripts/sinusoid_response.py      # nový
+scripts/cpp/                      # nový — C++ verifikace timingu
+scripts/cpp/sinusoid_response.cpp
+scripts/cpp/CMakeLists.txt
+scripts/cpp/recompile.sh
 doc/sim_to_real_calibration.md    # tento dokument
 ```
