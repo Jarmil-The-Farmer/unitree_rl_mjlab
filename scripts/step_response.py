@@ -158,20 +158,36 @@ class StepTester:
     def init_dds(self) -> None:
         ChannelFactoryInitialize(0, self.iface)
 
-        msc = MotionSwitcherClient()
-        msc.SetTimeout(5.0)
-        msc.Init()
-        status, result = msc.CheckMode()
-        retries = 0
-        while result.get("name") and retries < 10:
-            print(f"[DDS] uvolňuji mode='{result['name']}'...")
-            msc.ReleaseMode()
-            time.sleep(0.5)
+        # Motion switcher je součást firmware reálného robota. V MuJoCo simu
+        # ho není — CheckMode() timeoutuje a vrátí None. Tomu se defensive
+        # vyhýbáme.
+        try:
+            msc = MotionSwitcherClient()
+            msc.SetTimeout(2.0)
+            msc.Init()
             status, result = msc.CheckMode()
-            retries += 1
-        if result.get("name"):
-            raise RuntimeError(f"Nelze uvolnit motion switcher: {result}")
-        print(f"[DDS] motion switcher uvolněn (iface={self.iface})")
+        except Exception as e:
+            print(f"[DDS] motion switcher chyba ({e}) — pokračuji jako sim")
+            result = None
+
+        if result is None:
+            print(f"[DDS] žádný motion switcher (sim / direct low-level)")
+        elif result.get("name"):
+            retries = 0
+            while result and result.get("name") and retries < 10:
+                print(f"[DDS] uvolňuji mode='{result['name']}'...")
+                msc.ReleaseMode()
+                time.sleep(0.5)
+                try:
+                    status, result = msc.CheckMode()
+                except Exception:
+                    result = None
+                retries += 1
+            if result and result.get("name"):
+                raise RuntimeError(f"Nelze uvolnit motion switcher: {result}")
+            print(f"[DDS] motion switcher uvolněn")
+        else:
+            print(f"[DDS] motion switcher volný (iface={self.iface})")
 
         self.pub = ChannelPublisher("rt/lowcmd", LowCmd_)
         self.pub.Init()
