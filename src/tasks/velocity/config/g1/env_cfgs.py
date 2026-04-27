@@ -24,7 +24,7 @@ from src.tasks.velocity.mdp.events import nudge_joints_position, nudge_joints_ve
 from src.tasks.velocity.mdp.observations import payload_masses
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
-from src.tasks.velocity.mdp.rewards import joint_deviation_l2, stand_still_lin_vel, track_base_height, track_linear_velocity_no_z
+from src.tasks.velocity.mdp.rewards import action_rate_l2_standing, joint_acc_l2_standing, joint_deviation_l2, stand_still_lin_vel, track_base_height, track_linear_velocity_no_z
 from src.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
 
@@ -501,9 +501,10 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
   # 1) Replace track_linear_velocity with a version that doesn't penalize
   #    z-velocity. The original penalizes vertical motion (2 * z_error²),
   #    which directly conflicts with height changes during squatting.
+  #    Boosted weight so walking is more attractive than standing.
   cfg.rewards["track_linear_velocity"] = RewardTermCfg(
     func=track_linear_velocity_no_z,
-    weight=1.0,
+    weight=1.5,
     params={"command_name": "twist", "std": math.sqrt(0.25)},
   )
 
@@ -558,6 +559,30 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     },
   )
 
+  # 7c) Standing-only smoothness penalties — stronger than the global
+  # action_rate_l2 / joint_acc_l2, but apply ONLY when commanded velocity
+  # is below threshold. Eliminates tremor while standing (especially during
+  # arm motion) without inhibiting dynamic walking gait.
+  cfg.rewards["action_rate_standing"] = RewardTermCfg(
+    func=action_rate_l2_standing,
+    weight=-0.3,  # ramped up by curriculum
+    params={"command_name": "twist", "command_threshold": 0.1},
+  )
+  cfg.rewards["joint_acc_standing"] = RewardTermCfg(
+    func=joint_acc_l2_standing,
+    weight=-1.5e-6,  # ramped up by curriculum
+    params={
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg(
+        "robot",
+        joint_names=(
+          ".*_hip_.*", ".*_knee_.*", ".*_ankle_.*", "waist_.*",
+        ),
+      ),
+    },
+  )
+
   # 8) Add shoulder_roll randomization to prevent arm crossing.
   cfg.events["randomize_arm_pose"].params["shoulder_roll_range"] = (0.2, 0.8)
 
@@ -584,14 +609,16 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
 
   # 10) Smoothness curriculum: ramp up action_rate and joint_acc penalties
   # in later training to eliminate tremor once basic balance is learned.
+  # Global action_rate / joint_acc — kept LOW so walking dynamics aren't
+  # suppressed. Standing tremor is handled by the *_standing rewards below.
   cfg.curriculum["action_rate_weight"] = CurriculumTermCfg(
     func=reward_weight,
     params={
       "reward_name": "action_rate_l2",
       "weight_stages": [
-        {"step": 0,           "weight": -0.05},   # base value
-        {"step": 6000 * 24,   "weight": -0.15},
-        {"step": 12000 * 24,  "weight": -0.3},
+        {"step": 0,           "weight": -0.05},
+        {"step": 6000 * 24,   "weight": -0.08},
+        {"step": 12000 * 24,  "weight": -0.10},
       ],
     },
   )
@@ -600,9 +627,34 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     params={
       "reward_name": "joint_acc_l2",
       "weight_stages": [
-        {"step": 0,           "weight": -2.5e-7},  # base value
-        {"step": 6000 * 24,   "weight": -7.5e-7},
-        {"step": 12000 * 24,  "weight": -1.5e-6},
+        {"step": 0,           "weight": -2.5e-7},
+        {"step": 6000 * 24,   "weight": -3.5e-7},
+        {"step": 12000 * 24,  "weight": -5.0e-7},
+      ],
+    },
+  )
+
+  # Standing-only smoothness — strong anti-tremor signal applied ONLY when
+  # commanded velocity is near zero. Doesn't affect walking envs.
+  cfg.curriculum["action_rate_standing_weight"] = CurriculumTermCfg(
+    func=reward_weight,
+    params={
+      "reward_name": "action_rate_standing",
+      "weight_stages": [
+        {"step": 0,           "weight": -0.1},
+        {"step": 6000 * 24,   "weight": -0.4},
+        {"step": 12000 * 24,  "weight": -0.8},
+      ],
+    },
+  )
+  cfg.curriculum["joint_acc_standing_weight"] = CurriculumTermCfg(
+    func=reward_weight,
+    params={
+      "reward_name": "joint_acc_standing",
+      "weight_stages": [
+        {"step": 0,           "weight": -5.0e-7},
+        {"step": 6000 * 24,   "weight": -2.0e-6},
+        {"step": 12000 * 24,  "weight": -4.0e-6},
       ],
     },
   )
@@ -611,11 +663,11 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
   # aggressive arm motion in later training.
   cfg.curriculum["standing_balance"].params["stages"] = [
     {"step": 0,           "rel_standing_envs": 0.2, "nudge_speed": 0.3, "nudge_offset_range": (-0.5, 0.5)},
-    {"step": 1500 * 24,   "rel_standing_envs": 0.4, "nudge_speed": 0.5, "nudge_offset_range": (-0.5, 0.5)},
-    {"step": 3000 * 24,   "rel_standing_envs": 0.6, "nudge_speed": 0.8, "nudge_offset_range": (-0.7, 0.7)},
-    {"step": 6000 * 24,   "rel_standing_envs": 0.7, "nudge_speed": 1.2, "nudge_offset_range": (-0.8, 0.8)},
-    {"step": 9000 * 24,   "rel_standing_envs": 0.7, "nudge_speed": 1.8, "nudge_offset_range": (-1.0, 1.0)},
-    {"step": 14000 * 24,  "rel_standing_envs": 0.7, "nudge_speed": 2.5, "nudge_offset_range": (-1.2, 1.2)},
+    {"step": 1500 * 24,   "rel_standing_envs": 0.3, "nudge_speed": 0.5, "nudge_offset_range": (-0.5, 0.5)},
+    {"step": 3000 * 24,   "rel_standing_envs": 0.4, "nudge_speed": 0.8, "nudge_offset_range": (-0.7, 0.7)},
+    {"step": 6000 * 24,   "rel_standing_envs": 0.5, "nudge_speed": 1.2, "nudge_offset_range": (-0.8, 0.8)},
+    {"step": 9000 * 24,   "rel_standing_envs": 0.5, "nudge_speed": 1.8, "nudge_offset_range": (-1.0, 1.0)},
+    {"step": 14000 * 24,  "rel_standing_envs": 0.5, "nudge_speed": 2.5, "nudge_offset_range": (-1.2, 1.2)},
   ]
 
   if play:

@@ -489,6 +489,50 @@ def joint_deviation_l2(
   return torch.sum(torch.square(diff), dim=1)
 
 
+def action_rate_l2_standing(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+) -> torch.Tensor:
+  """L2 penalty on action rate, masked to standing envs only.
+
+  Encourages smooth, tremor-free motion when the robot is commanded to
+  stand still. Walking envs are unaffected so dynamic gait isn't suppressed.
+  """
+  diff = env.action_manager.action - env.action_manager.prev_action
+  penalty = torch.sum(torch.square(diff), dim=1)
+  command = env.command_manager.get_command(command_name)
+  if command is not None:
+    linear_norm = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    is_standing = (linear_norm + angular_norm) <= command_threshold
+    penalty = penalty * is_standing.float()
+  return penalty
+
+
+def joint_acc_l2_standing(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """L2 penalty on joint accelerations, masked to standing envs only.
+
+  Suppresses joint tremor while standing without inhibiting the dynamic
+  joint accelerations needed for walking gait.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  acc = asset.data.joint_acc[:, asset_cfg.joint_ids]
+  penalty = torch.sum(torch.square(acc), dim=1)
+  command = env.command_manager.get_command(command_name)
+  if command is not None:
+    linear_norm = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    is_standing = (linear_norm + angular_norm) <= command_threshold
+    penalty = penalty * is_standing.float()
+  return penalty
+
+
 def stand_still(
         env: ManagerBasedRlEnv,
         command_name: str,
