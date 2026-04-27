@@ -14,13 +14,17 @@ static bool was_colliding = false;
 #ifdef WITH_LCM_ARMS
 #include <lcm/lcm-cpp.hpp>
 #include "arm_action_lcmt.hpp"
+#include "body_control_data_lcmt.hpp"
 #include <atomic>
+#include <chrono>
 #include <mutex>
 
 namespace {
 
 constexpr int ARM_JOINT_START = 15;
 constexpr int NUM_ARM_JOINTS = 14;
+constexpr int BODY_JOINT_START = 0;
+constexpr int NUM_NON_ARM_JOINTS = ARM_JOINT_START;
 
 // Fallback arm gains used only when the deploy.yaml stiffness/damping arrays
 // cover only legs/waist (<29 entries). New configs should include all 29 joints.
@@ -47,8 +51,7 @@ struct ArmReceiver {
                 lcm.handleTimeout(100);
             }
         });
-        spdlog::info("Arm LCM receiver started (channel: 'arm_action', joints {}-{})",
-                      ARM_JOINT_START, ARM_JOINT_START + NUM_ARM_JOINTS - 1);
+        spdlog::info("Arm LCM bridge started (rx: 'arm_action', tx: 'body_control_data')");
     }
 
     ~ArmReceiver() {
@@ -70,6 +73,27 @@ struct ArmReceiver {
         for (int i = 0; i < NUM_ARM_JOINTS; ++i)
             out[i] = positions[i];
         return true;
+    }
+
+    void publish_body_state(const LowState_t& lowstate_msg) {
+        body_control_data_lcmt msg{};
+
+        // Publish in URDF/hardware order: 15 body joints first, 14 arm joints last.
+        for (int i = 0; i < NUM_NON_ARM_JOINTS; ++i) {
+            const int motor_id = BODY_JOINT_START + i;
+            msg.q[i] = lowstate_msg.msg_.motor_state()[motor_id].q();
+            msg.qd[i] = lowstate_msg.msg_.motor_state()[motor_id].dq();
+        }
+        for (int i = 0; i < NUM_ARM_JOINTS; ++i) {
+            const int out_idx = NUM_NON_ARM_JOINTS + i;
+            const int motor_id = ARM_JOINT_START + i;
+            msg.q[out_idx] = lowstate_msg.msg_.motor_state()[motor_id].q();
+            msg.qd[out_idx] = lowstate_msg.msg_.motor_state()[motor_id].dq();
+        }
+
+        msg.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        lcm.publish("body_control_data", &msg);
     }
 };
 
@@ -191,6 +215,11 @@ void State_RLBase::run()
 
 #ifdef WITH_LCM_ARMS
     if (g_arm_receiver) {
+        {
+            std::lock_guard<std::mutex> lock(lowstate->mutex_);
+            g_arm_receiver->publish_body_state(*lowstate);
+        }
+
         // Prefer gains from deploy.yaml (stiffness/damping arrays covering all 29
         // joints). Fall back to hardcoded values for legacy configs with only
         // 15 entries.
