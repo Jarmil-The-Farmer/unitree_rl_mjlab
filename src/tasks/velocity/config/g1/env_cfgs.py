@@ -565,12 +565,12 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
   # arm motion) without inhibiting dynamic walking gait.
   cfg.rewards["action_rate_standing"] = RewardTermCfg(
     func=action_rate_l2_standing,
-    weight=-0.3,  # ramped up by curriculum
+    weight=-0.05,  # initial; curriculum ramps to -0.15
     params={"command_name": "twist", "command_threshold": 0.1},
   )
   cfg.rewards["joint_acc_standing"] = RewardTermCfg(
     func=joint_acc_l2_standing,
-    weight=-1.5e-6,  # ramped up by curriculum
+    weight=-1.0e-7,  # initial; curriculum ramps to -4e-7
     params={
       "command_name": "twist",
       "command_threshold": 0.1,
@@ -634,16 +634,18 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     },
   )
 
-  # Standing-only smoothness — strong anti-tremor signal applied ONLY when
-  # commanded velocity is near zero. Doesn't affect walking envs.
+  # Standing-only smoothness — gentle anti-tremor signal applied ONLY when
+  # commanded velocity is near zero. Kept modest so balance corrections
+  # remain affordable; previous strong weights caused the policy to fall
+  # rather than make corrections (tremor cost > termination cost).
   cfg.curriculum["action_rate_standing_weight"] = CurriculumTermCfg(
     func=reward_weight,
     params={
       "reward_name": "action_rate_standing",
       "weight_stages": [
-        {"step": 0,           "weight": -0.1},
-        {"step": 6000 * 24,   "weight": -0.4},
-        {"step": 12000 * 24,  "weight": -0.8},
+        {"step": 0,           "weight": -0.05},
+        {"step": 8000 * 24,   "weight": -0.10},
+        {"step": 14000 * 24,  "weight": -0.15},
       ],
     },
   )
@@ -652,9 +654,9 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     params={
       "reward_name": "joint_acc_standing",
       "weight_stages": [
-        {"step": 0,           "weight": -5.0e-7},
-        {"step": 6000 * 24,   "weight": -2.0e-6},
-        {"step": 12000 * 24,  "weight": -4.0e-6},
+        {"step": 0,           "weight": -1.0e-7},
+        {"step": 8000 * 24,   "weight": -2.5e-7},
+        {"step": 14000 * 24,  "weight": -4.0e-7},
       ],
     },
   )
