@@ -1,0 +1,19 @@
+struct inspire_hand_state_lcmt
+{
+    int64_t timestamp_us;
+
+    // bit0: left, bit1: right. A bit is set after at least one state packet
+    // was received for that hand.
+    int8_t hand_mask;
+
+    // Hand order is left[0:6], right[6:12].
+    // Finger order matches inspire_hand_ws: pinky, ring, middle, index,
+    // thumb bend, thumb rotation.
+    int16_t finger_pos[12];
+    int16_t finger_angle[12];
+    int16_t finger_force[12];
+    int16_t current[12];
+    int8_t error[12];
+    int8_t status[12];
+    int8_t temperature[12];
+}

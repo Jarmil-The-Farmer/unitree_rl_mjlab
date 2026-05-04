@@ -59,6 +59,7 @@ add_executable(unitree_mujoco
   ${SIM_SRC}
   src/main.cc
   ${CMAKE_CURRENT_SOURCE_DIR}/../deploy/robots/g1/src/inspire_hand_ctrl.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../deploy/robots/g1/src/inspire_hand_state.cpp
 )
 
 add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)

@@ -16,8 +16,11 @@ static bool was_colliding = false;
 #include "arm_action_lcmt.hpp"
 #include "body_control_data_lcmt.hpp"
 #include "inspire_hand_action_lcmt.hpp"
+#include "inspire_hand_state_lcmt.hpp"
 #include "inspire_hand_ctrl.hpp"
+#include "inspire_hand_state.hpp"
 #include <unitree/robot/channel/channel_publisher.hpp>
+#include <unitree/robot/channel/channel_subscriber.hpp>
 #include <atomic>
 #include <array>
 #include <algorithm>
@@ -47,6 +50,8 @@ constexpr int16_t INSPIRE_HAND_OPEN = 1000;
 
 using InspireHandPublisher =
     unitree::robot::ChannelPublisher<inspire::inspire_hand_ctrl>;
+using InspireHandStateSubscriber =
+    unitree::robot::ChannelSubscriber<inspire::inspire_hand_state>;
 
 struct ArmReceiver {
     lcm::LCM lcm;
@@ -139,6 +144,28 @@ public:
         pub_right_ = std::make_shared<InspireHandPublisher>("rt/inspire_hand/ctrl/r");
         pub_left_->InitChannel();
         pub_right_->InitChannel();
+        sub_state_left_ = std::make_shared<InspireHandStateSubscriber>("rt/inspire_hand/state/l");
+        sub_state_right_ = std::make_shared<InspireHandStateSubscriber>("rt/inspire_hand/state/r");
+        sub_state_left_->InitChannel([this](const void *message) {
+            const auto *state = static_cast<const inspire::inspire_hand_state*>(message);
+            handle_state(HAND_MASK_LEFT, 0, *state);
+        }, 10);
+        sub_state_right_->InitChannel([this](const void *message) {
+            const auto *state = static_cast<const inspire::inspire_hand_state*>(message);
+            handle_state(HAND_MASK_RIGHT, NUM_HAND_FINGERS, *state);
+        }, 10);
+
+        latest_state_.timestamp_us = default_cmd_.timestamp_us;
+        latest_state_.hand_mask = 0;
+        for (int i = 0; i < NUM_HAND_VALUES; ++i) {
+            latest_state_.finger_pos[i] = INSPIRE_HAND_OPEN;
+            latest_state_.finger_angle[i] = INSPIRE_HAND_OPEN;
+            latest_state_.finger_force[i] = 0;
+            latest_state_.current[i] = 0;
+            latest_state_.error[i] = 0;
+            latest_state_.status[i] = 0;
+            latest_state_.temperature[i] = 0;
+        }
 
         if (!lcm_.good()) {
             spdlog::error("LCM initialization failed for Inspire hand receiver");
@@ -155,6 +182,8 @@ public:
 
         spdlog::info(
             "Inspire hand bridge started (rx: 'inspire_hand_action', tx: 'rt/inspire_hand/ctrl/l|r')");
+        spdlog::info(
+            "Inspire hand state bridge started (rx: 'rt/inspire_hand/state/l|r', tx: 'inspire_hand_state')");
 
         publish(default_cmd_);
         default_published_ = true;
@@ -250,6 +279,57 @@ private:
         out.mode(INSPIRE_MODE_ANGLE);
     }
 
+    static int16_t seq_i16_at(const std::vector<int16_t>& seq, size_t index,
+                              int16_t fallback = 0) {
+        return index < seq.size() ? seq[index] : fallback;
+    }
+
+    static int8_t seq_u8_at(const std::vector<uint8_t>& seq, size_t index,
+                            int8_t fallback = 0) {
+        return index < seq.size() ? static_cast<int8_t>(seq[index]) : fallback;
+    }
+
+    void handle_state(int8_t hand_mask, int offset,
+                      const inspire::inspire_hand_state& state) {
+        inspire_hand_state_lcmt out{};
+        uint64_t sequence = 0;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            latest_state_.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            latest_state_.hand_mask |= hand_mask;
+
+            for (int i = 0; i < NUM_HAND_FINGERS; ++i) {
+                latest_state_.finger_pos[offset + i] = seq_i16_at(state.pos_act(), i, INSPIRE_HAND_OPEN);
+                latest_state_.finger_angle[offset + i] = seq_i16_at(state.angle_act(), i, INSPIRE_HAND_OPEN);
+                latest_state_.finger_force[offset + i] = seq_i16_at(state.force_act(), i);
+                latest_state_.current[offset + i] = seq_i16_at(state.current(), i);
+                latest_state_.error[offset + i] = seq_u8_at(state.err(), i);
+                latest_state_.status[offset + i] = seq_u8_at(state.status(), i);
+                latest_state_.temperature[offset + i] = seq_u8_at(state.temperature(), i);
+            }
+
+            out = latest_state_;
+            sequence = ++state_sequence_;
+        }
+
+        if (sequence <= 5 || sequence % 100 == 0) {
+            spdlog::info(
+                "Inspire hand DDS state rx #{} mask={} angle L=[{}, {}, {}, {}, {}, {}] R=[{}, {}, {}, {}, {}, {}]",
+                sequence,
+                static_cast<int>(out.hand_mask),
+                out.finger_angle[0], out.finger_angle[1], out.finger_angle[2],
+                out.finger_angle[3], out.finger_angle[4], out.finger_angle[5],
+                out.finger_angle[6], out.finger_angle[7], out.finger_angle[8],
+                out.finger_angle[9], out.finger_angle[10], out.finger_angle[11]);
+        }
+
+        std::lock_guard<std::mutex> lock(state_lcm_mutex_);
+        if (state_lcm_.good()) {
+            state_lcm_.publish("inspire_hand_state", &out);
+        }
+    }
+
     void publish(const InspireHandCommand& cmd) {
         std::lock_guard<std::mutex> lock(publish_mutex_);
         if ((cmd.hand_mask & HAND_MASK_LEFT) && pub_left_) {
@@ -265,19 +345,26 @@ private:
     }
 
     lcm::LCM lcm_;
+    lcm::LCM state_lcm_;
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::mutex mutex_;
     std::mutex publish_mutex_;
+    std::mutex state_mutex_;
+    std::mutex state_lcm_mutex_;
     InspireHandCommand latest_;
     InspireHandCommand default_cmd_;
+    inspire_hand_state_lcmt latest_state_{};
     bool has_lcm_data_ = false;
     bool default_published_ = false;
     uint64_t sequence_ = 0;
+    uint64_t state_sequence_ = 0;
     uint64_t published_sequence_ = std::numeric_limits<uint64_t>::max();
     std::chrono::steady_clock::time_point last_publish_time_{};
     std::shared_ptr<InspireHandPublisher> pub_left_;
     std::shared_ptr<InspireHandPublisher> pub_right_;
+    std::shared_ptr<InspireHandStateSubscriber> sub_state_left_;
+    std::shared_ptr<InspireHandStateSubscriber> sub_state_right_;
 };
 
 static std::unique_ptr<InspireHandBridge> g_inspire_hand_bridge;

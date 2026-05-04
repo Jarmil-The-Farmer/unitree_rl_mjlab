@@ -2,11 +2,13 @@
 
 #include <mujoco/mujoco.h>
 #include <unitree/robot/channel/channel_subscriber.hpp>
+#include <unitree/robot/channel/channel_publisher.hpp>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -22,6 +24,7 @@
 #include <unistd.h>
 
 #include "inspire_hand_ctrl.hpp"
+#include "inspire_hand_state.hpp"
 
 class InspireHandModbusServer
 {
@@ -152,6 +155,8 @@ public:
             right_.angle_act = actual_angles[kRight];
             right_.pos_act = actual_angles[kRight];
         }
+
+        publish_state_if_due();
     }
 
 private:
@@ -202,6 +207,8 @@ private:
 
     using InspireHandSubscriber =
         unitree::robot::ChannelSubscriber<inspire::inspire_hand_ctrl>;
+    using InspireHandStatePublisher =
+        unitree::robot::ChannelPublisher<inspire::inspire_hand_state>;
 
     static void init_hand_state(HandState& state)
     {
@@ -447,6 +454,11 @@ private:
             return;
         }
 
+        pub_state_left_ = std::make_shared<InspireHandStatePublisher>("rt/inspire_hand/state/l");
+        pub_state_right_ = std::make_shared<InspireHandStatePublisher>("rt/inspire_hand/state/r");
+        pub_state_left_->InitChannel();
+        pub_state_right_->InitChannel();
+
         sub_left_ = std::make_shared<InspireHandSubscriber>("rt/inspire_hand/ctrl/l");
         sub_right_ = std::make_shared<InspireHandSubscriber>("rt/inspire_hand/ctrl/r");
         sub_left_->InitChannel([this](const void *message) {
@@ -458,7 +470,52 @@ private:
             write_dds_command(kRight, *cmd);
         }, 10);
         dds_started_ = true;
-        std::cout << "[inspire_modbus] DDS subscribers active on rt/inspire_hand/ctrl/l|r" << std::endl;
+        std::cout << "[inspire_modbus] DDS active on rt/inspire_hand/ctrl/l|r and rt/inspire_hand/state/l|r" << std::endl;
+    }
+
+    static void fill_state_msg(const HandState& hand, inspire::inspire_hand_state& out)
+    {
+        out.pos_act().assign(hand.pos_act.begin(), hand.pos_act.end());
+        out.angle_act().assign(hand.angle_act.begin(), hand.angle_act.end());
+        out.force_act().assign(hand.force_set.begin(), hand.force_set.end());
+        out.current().assign(hand.current.begin(), hand.current.end());
+
+        out.err().resize(kNumFingers);
+        out.status().resize(kNumFingers);
+        out.temperature().resize(kNumFingers);
+        for (int i = 0; i < kNumFingers; ++i) {
+            out.err()[i] = static_cast<uint8_t>(std::clamp<int>(hand.err[i], 0, 255));
+            out.status()[i] = static_cast<uint8_t>(std::clamp<int>(hand.status[i], 0, 255));
+            out.temperature()[i] = static_cast<uint8_t>(std::clamp<int>(hand.temperature[i], 0, 255));
+        }
+    }
+
+    void publish_state_if_due()
+    {
+        if (!dds_started_ || !pub_state_left_ || !pub_state_right_) {
+            return;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_state_publish_time_ < std::chrono::milliseconds(20)) {
+            return;
+        }
+        last_state_publish_time_ = now;
+
+        HandState left;
+        HandState right;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            left = left_;
+            right = right_;
+        }
+
+        inspire::inspire_hand_state left_msg;
+        inspire::inspire_hand_state right_msg;
+        fill_state_msg(left, left_msg);
+        fill_state_msg(right, right_msg);
+        pub_state_left_->Write(left_msg);
+        pub_state_right_->Write(right_msg);
     }
 
     void write_dds_command(int hand_index, const inspire::inspire_hand_ctrl& msg)
@@ -673,6 +730,9 @@ private:
     int listen_fd_ = -1;
     std::thread accept_thread_;
     bool dds_started_ = false;
+    std::chrono::steady_clock::time_point last_state_publish_time_{};
     std::shared_ptr<InspireHandSubscriber> sub_left_;
     std::shared_ptr<InspireHandSubscriber> sub_right_;
+    std::shared_ptr<InspireHandStatePublisher> pub_state_left_;
+    std::shared_ptr<InspireHandStatePublisher> pub_state_right_;
 };
