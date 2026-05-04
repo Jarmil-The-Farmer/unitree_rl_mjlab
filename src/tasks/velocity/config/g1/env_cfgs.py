@@ -24,7 +24,7 @@ from src.tasks.velocity.mdp.events import nudge_joints_position, nudge_joints_ve
 from src.tasks.velocity.mdp.observations import payload_masses
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
-from src.tasks.velocity.mdp.rewards import action_rate_l2_standing, joint_acc_l2_standing, joint_deviation_l2, stand_still_lin_vel, track_base_height, track_linear_velocity_no_z
+from src.tasks.velocity.mdp.rewards import action_rate_l2_standing, base_ang_vel_standing, joint_acc_l2_standing, joint_deviation_l2, stand_still_lin_vel, track_base_height, track_linear_velocity_no_z
 from src.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
 
@@ -568,6 +568,12 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     weight=-0.05,  # initial; curriculum ramps to -0.15
     params={"command_name": "twist", "command_threshold": 0.1},
   )
+  # Anti-oscillation: penalize torso rocking when standing.
+  cfg.rewards["base_ang_vel_standing"] = RewardTermCfg(
+    func=base_ang_vel_standing,
+    weight=-0.5,
+    params={"command_name": "twist", "command_threshold": 0.1},
+  )
   cfg.rewards["joint_acc_standing"] = RewardTermCfg(
     func=joint_acc_l2_standing,
     weight=-1.0e-7,  # initial; curriculum ramps to -4e-7
@@ -670,6 +676,9 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     {"step": 6000 * 24,   "rel_standing_envs": 0.5, "nudge_speed": 1.2, "nudge_offset_range": (-0.8, 0.8)},
     {"step": 9000 * 24,   "rel_standing_envs": 0.5, "nudge_speed": 1.8, "nudge_offset_range": (-1.0, 1.0)},
     {"step": 14000 * 24,  "rel_standing_envs": 0.5, "nudge_speed": 2.5, "nudge_offset_range": (-1.2, 1.2)},
+    # Late-stage "arm hold" — slow arm motion + larger fraction of standing envs
+    # to specifically train stable balancing with near-static arm poses.
+    {"step": 20000 * 24,  "rel_standing_envs": 0.6, "nudge_speed": 0.5, "nudge_offset_range": (-0.8, 0.8)},
   ]
 
   if play:

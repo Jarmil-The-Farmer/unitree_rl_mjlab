@@ -489,6 +489,29 @@ def joint_deviation_l2(
   return torch.sum(torch.square(diff), dim=1)
 
 
+def base_ang_vel_standing(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize base angular velocity when commanded to stand still.
+
+  Suppresses torso rocking/oscillation while standing. Doesn't apply during
+  walking so natural turning dynamics aren't inhibited.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  ang_vel = asset.data.root_link_ang_vel_b
+  penalty = torch.sum(torch.square(ang_vel), dim=1)
+  command = env.command_manager.get_command(command_name)
+  if command is not None:
+    linear_norm = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    is_standing = (linear_norm + angular_norm) <= command_threshold
+    penalty = penalty * is_standing.float()
+  return penalty
+
+
 def action_rate_l2_standing(
   env: ManagerBasedRlEnv,
   command_name: str,
