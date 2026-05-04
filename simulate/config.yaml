@@ -34,3 +34,12 @@ image_server:
   height: 1072
   jpeg_quality: 80
   camera: "head_cam"
+
+# Fake Inspire Hand Modbus TCP endpoint for simulation. It accepts the same
+# holding-register writes used by inspire_hand_ws and maps angle/position
+# commands to the MuJoCo Inspire finger joints.
+inspire_hand_modbus_server:
+  enable: 1
+  port: 6000
+  left_device_id: 2
+  right_device_id: 1

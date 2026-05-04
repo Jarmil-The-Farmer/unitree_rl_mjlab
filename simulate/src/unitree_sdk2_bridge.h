@@ -13,6 +13,7 @@
 
 #include "param.h"
 #include "physics_joystick.h"
+#include "inspire_hand_modbus_server.h"
 
 #define MOTOR_SENSOR_NUM 3
 
@@ -273,11 +274,25 @@ public:
         bmsstate->msg_.soc() = 100;
 
         secondary_imustate = std::make_unique<IMUState_t>("rt/secondary_imu");
+
+        if (param::config.enable_inspire_hand_modbus_server) {
+            inspire_hand_modbus_server = std::make_unique<InspireHandModbusServer>(
+                model,
+                data,
+                param::config.inspire_hand_modbus_port,
+                param::config.inspire_hand_modbus_left_device_id,
+                param::config.inspire_hand_modbus_right_device_id);
+            inspire_hand_modbus_server->start();
+        }
     }
 
     void run() override
     {
         RobotBridge::run();
+
+        if (inspire_hand_modbus_server) {
+            inspire_hand_modbus_server->apply_to_sim();
+        }
 
         // secondary IMU state
         if (secondary_imustate->trylock()) {
@@ -322,4 +337,5 @@ public:
 //    using IMUState_t = unitree::robot::RealTimePublisher<unitree_go::msg::dds_::IMUState_>;
     std::unique_ptr<BmsState_t> bmsstate;
     std::unique_ptr<IMUState_t> secondary_imustate;
+    std::unique_ptr<InspireHandModbusServer> inspire_hand_modbus_server;
 };

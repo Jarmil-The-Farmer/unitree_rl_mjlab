@@ -35,6 +35,11 @@ inline struct SimulationConfig
     int image_server_jpeg_quality = 80;
     std::string image_server_camera = "head_cam";
 
+    int enable_inspire_hand_modbus_server = 0;
+    int inspire_hand_modbus_port = 6000;
+    int inspire_hand_modbus_left_device_id = 2;
+    int inspire_hand_modbus_right_device_id = 1;
+
     void load_from_yaml(const std::string &filename)
     {
         auto cfg = YAML::LoadFile(filename);
@@ -61,6 +66,16 @@ inline struct SimulationConfig
                 if (is["height"]) image_server_height = is["height"].as<int>();
                 if (is["jpeg_quality"]) image_server_jpeg_quality = is["jpeg_quality"].as<int>();
                 if (is["camera"]) image_server_camera = is["camera"].as<std::string>();
+            }
+
+            // Optional fake Inspire Modbus TCP server. It mirrors the register
+            // writes used by inspire_hand_ws and drives MuJoCo finger joints.
+            if (cfg["inspire_hand_modbus_server"]) {
+                auto ms = cfg["inspire_hand_modbus_server"];
+                if (ms["enable"]) enable_inspire_hand_modbus_server = ms["enable"].as<int>();
+                if (ms["port"]) inspire_hand_modbus_port = ms["port"].as<int>();
+                if (ms["left_device_id"]) inspire_hand_modbus_left_device_id = ms["left_device_id"].as<int>();
+                if (ms["right_device_id"]) inspire_hand_modbus_right_device_id = ms["right_device_id"].as<int>();
             }
         }
         catch(const std::exception& e)

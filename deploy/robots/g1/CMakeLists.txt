@@ -3,7 +3,7 @@ project(g1_controller)
 
 set(CMAKE_CXX_STANDARD 17)
 
-option(WITH_LCM_ARMS "Enable LCM arm receiver (requires liblcm-dev)" ON)
+option(WITH_LCM_ARMS "Enable LCM arm/hand receivers (requires liblcm-dev)" ON)
 option(WITH_COLLISION_RENDER "Enable GLFW collision visualization (requires libglfw3-dev)" ON)
 
 find_package(Boost REQUIRED COMPONENTS program_options)
@@ -61,7 +61,7 @@ link_libraries(
 
 if(WITH_LCM_ARMS)
   find_library(LCM_LIBRARY lcm REQUIRED)
-  message(STATUS "LCM arm receiver enabled, linking: ${LCM_LIBRARY}")
+  message(STATUS "LCM arm/hand receivers enabled, linking: ${LCM_LIBRARY}")
   add_definitions(-DWITH_LCM_ARMS)
   link_libraries(${LCM_LIBRARY})
 endif()

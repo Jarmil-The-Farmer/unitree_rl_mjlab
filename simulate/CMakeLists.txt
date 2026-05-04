@@ -29,6 +29,7 @@ include_directories(
   ${MUJOCO_DIR}/include
   ${MUJOCO_DIR}/simulate
   src/lodepng
+  ${CMAKE_CURRENT_SOURCE_DIR}/../deploy/robots/g1/include
 )
 link_directories(${MUJOCO_DIR}/lib)
 
@@ -54,6 +55,10 @@ link_libraries(
   turbojpeg
 )
 
-add_executable(unitree_mujoco ${SIM_SRC} src/main.cc)
+add_executable(unitree_mujoco
+  ${SIM_SRC}
+  src/main.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/../deploy/robots/g1/src/inspire_hand_ctrl.cpp
+)
 
 add_executable(jstest src/joystick/jstest.cc src/joystick/joystick.cc)

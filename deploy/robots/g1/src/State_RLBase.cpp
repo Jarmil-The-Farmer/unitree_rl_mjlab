@@ -15,9 +15,16 @@ static bool was_colliding = false;
 #include <lcm/lcm-cpp.hpp>
 #include "arm_action_lcmt.hpp"
 #include "body_control_data_lcmt.hpp"
+#include "inspire_hand_action_lcmt.hpp"
+#include "inspire_hand_ctrl.hpp"
+#include <unitree/robot/channel/channel_publisher.hpp>
 #include <atomic>
+#include <array>
+#include <algorithm>
 #include <chrono>
+#include <limits>
 #include <mutex>
+#include <thread>
 
 namespace {
 
@@ -30,6 +37,16 @@ constexpr int NUM_NON_ARM_JOINTS = ARM_JOINT_START;
 // cover only legs/waist (<29 entries). New configs should include all 29 joints.
 constexpr float ARM_KP_FALLBACK = 40.0f;
 constexpr float ARM_KD_FALLBACK = 10.0f;
+
+constexpr int NUM_HAND_FINGERS = 6;
+constexpr int NUM_HAND_VALUES = NUM_HAND_FINGERS * 2;
+constexpr int HAND_MASK_LEFT = 1 << 0;
+constexpr int HAND_MASK_RIGHT = 1 << 1;
+constexpr int INSPIRE_MODE_ANGLE = 0b0001;
+constexpr int16_t INSPIRE_HAND_OPEN = 1000;
+
+using InspireHandPublisher =
+    unitree::robot::ChannelPublisher<inspire::inspire_hand_ctrl>;
 
 struct ArmReceiver {
     lcm::LCM lcm;
@@ -99,6 +116,172 @@ struct ArmReceiver {
 
 static std::unique_ptr<ArmReceiver> g_arm_receiver;
 
+struct InspireHandCommand {
+    int64_t timestamp_us = 0;
+    int8_t hand_mask = HAND_MASK_LEFT | HAND_MASK_RIGHT;
+    std::array<int16_t, NUM_HAND_VALUES> finger_angle{};
+};
+
+static int16_t clamp_inspire_value(int16_t value) {
+    return static_cast<int16_t>(std::clamp<int>(value, 0, 1000));
+}
+
+class InspireHandBridge {
+public:
+    InspireHandBridge() {
+        default_cmd_.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        default_cmd_.hand_mask = HAND_MASK_LEFT | HAND_MASK_RIGHT;
+        default_cmd_.finger_angle.fill(INSPIRE_HAND_OPEN);
+        latest_ = default_cmd_;
+
+        pub_left_ = std::make_shared<InspireHandPublisher>("rt/inspire_hand/ctrl/l");
+        pub_right_ = std::make_shared<InspireHandPublisher>("rt/inspire_hand/ctrl/r");
+        pub_left_->InitChannel();
+        pub_right_->InitChannel();
+
+        if (!lcm_.good()) {
+            spdlog::error("LCM initialization failed for Inspire hand receiver");
+            return;
+        }
+
+        lcm_.subscribe("inspire_hand_action", &InspireHandBridge::handle, this);
+        running_ = true;
+        thread_ = std::thread([this] {
+            while (running_) {
+                lcm_.handleTimeout(100);
+            }
+        });
+
+        spdlog::info(
+            "Inspire hand bridge started (rx: 'inspire_hand_action', tx: 'rt/inspire_hand/ctrl/l|r')");
+
+        publish(default_cmd_);
+        default_published_ = true;
+        last_publish_time_ = std::chrono::steady_clock::now();
+    }
+
+    ~InspireHandBridge() {
+        running_ = false;
+        if (thread_.joinable())
+            thread_.join();
+    }
+
+    void handle(const lcm::ReceiveBuffer*, const std::string&,
+                const inspire_hand_action_lcmt* msg) {
+        InspireHandCommand cmd;
+        cmd.timestamp_us = msg->timestamp_us;
+        cmd.hand_mask = msg->hand_mask;
+        for (int i = 0; i < NUM_HAND_VALUES; ++i) {
+            cmd.finger_angle[i] = clamp_inspire_value(msg->finger_angle[i]);
+        }
+
+        uint64_t sequence = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            latest_ = cmd;
+            has_lcm_data_ = true;
+            sequence = ++sequence_;
+            default_published_ = false;
+            published_sequence_ = sequence;
+            last_publish_time_ = std::chrono::steady_clock::now();
+        }
+
+        if (sequence <= 5 || sequence % 100 == 0) {
+            spdlog::info(
+                "Inspire hand LCM rx #{} mask={} finger_angle L=[{}, {}, {}, {}, {}, {}] R=[{}, {}, {}, {}, {}, {}]",
+                sequence,
+                static_cast<int>(cmd.hand_mask),
+                cmd.finger_angle[0], cmd.finger_angle[1], cmd.finger_angle[2],
+                cmd.finger_angle[3], cmd.finger_angle[4], cmd.finger_angle[5],
+                cmd.finger_angle[6], cmd.finger_angle[7], cmd.finger_angle[8],
+                cmd.finger_angle[9], cmd.finger_angle[10], cmd.finger_angle[11]);
+        }
+
+        publish(cmd);
+    }
+
+    void publish_if_needed() {
+        InspireHandCommand cmd;
+        uint64_t sequence = 0;
+        bool has_lcm_data = false;
+        bool should_publish = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            cmd = has_lcm_data_ ? latest_ : default_cmd_;
+            sequence = sequence_;
+            has_lcm_data = has_lcm_data_;
+
+            const auto now = std::chrono::steady_clock::now();
+            if (!has_lcm_data) {
+                should_publish = !default_published_;
+            } else {
+                should_publish = sequence != published_sequence_ ||
+                    now - last_publish_time_ >= std::chrono::milliseconds(20);
+            }
+
+            if (should_publish) {
+                default_published_ = !has_lcm_data;
+                published_sequence_ = sequence;
+                last_publish_time_ = now;
+            }
+        }
+
+        if (!should_publish) {
+            return;
+        }
+
+        publish(cmd);
+    }
+
+private:
+    static void fill_dds_msg(const InspireHandCommand& cmd, int offset,
+                             inspire::inspire_hand_ctrl& out) {
+        out.angle_set().resize(NUM_HAND_FINGERS);
+        out.pos_set().resize(NUM_HAND_FINGERS);
+        out.force_set().resize(NUM_HAND_FINGERS);
+        out.speed_set().resize(NUM_HAND_FINGERS);
+        for (int i = 0; i < NUM_HAND_FINGERS; ++i) {
+            out.angle_set()[i] = cmd.finger_angle[offset + i];
+            out.pos_set()[i] = 0;
+            out.force_set()[i] = 0;
+            out.speed_set()[i] = 0;
+        }
+        out.mode(INSPIRE_MODE_ANGLE);
+    }
+
+    void publish(const InspireHandCommand& cmd) {
+        std::lock_guard<std::mutex> lock(publish_mutex_);
+        if ((cmd.hand_mask & HAND_MASK_LEFT) && pub_left_) {
+            inspire::inspire_hand_ctrl left;
+            fill_dds_msg(cmd, 0, left);
+            pub_left_->Write(left);
+        }
+        if ((cmd.hand_mask & HAND_MASK_RIGHT) && pub_right_) {
+            inspire::inspire_hand_ctrl right;
+            fill_dds_msg(cmd, NUM_HAND_FINGERS, right);
+            pub_right_->Write(right);
+        }
+    }
+
+    lcm::LCM lcm_;
+    std::thread thread_;
+    std::atomic<bool> running_{false};
+    std::mutex mutex_;
+    std::mutex publish_mutex_;
+    InspireHandCommand latest_;
+    InspireHandCommand default_cmd_;
+    bool has_lcm_data_ = false;
+    bool default_published_ = false;
+    uint64_t sequence_ = 0;
+    uint64_t published_sequence_ = std::numeric_limits<uint64_t>::max();
+    std::chrono::steady_clock::time_point last_publish_time_{};
+    std::shared_ptr<InspireHandPublisher> pub_left_;
+    std::shared_ptr<InspireHandPublisher> pub_right_;
+};
+
+static std::unique_ptr<InspireHandBridge> g_inspire_hand_bridge;
+
 } // anonymous namespace
 #endif // WITH_LCM_ARMS
 
@@ -153,9 +336,12 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
     if (param::receive_arms && !g_arm_receiver) {
         g_arm_receiver = std::make_unique<ArmReceiver>();
     }
+    if (param::receive_hands && !g_inspire_hand_bridge) {
+        g_inspire_hand_bridge = std::make_unique<InspireHandBridge>();
+    }
 #else
-    if (param::receive_arms) {
-        spdlog::error("--receive-arms requires building with -DWITH_LCM_ARMS=ON (and liblcm-dev installed)");
+    if (param::receive_arms || param::receive_hands) {
+        spdlog::error("--receive-arms/--receive-hands requires building with -DWITH_LCM_ARMS=ON (and liblcm-dev installed)");
         std::exit(1);
     }
 #endif
@@ -214,6 +400,10 @@ void State_RLBase::run()
     }
 
 #ifdef WITH_LCM_ARMS
+    if (g_inspire_hand_bridge) {
+        g_inspire_hand_bridge->publish_if_needed();
+    }
+
     if (g_arm_receiver) {
         {
             std::lock_guard<std::mutex> lock(lowstate->mutex_);

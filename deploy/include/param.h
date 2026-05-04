@@ -44,6 +44,7 @@ inline std::filesystem::path proj_dir;
 inline std::filesystem::path config_dir;
 inline YAML::Node config;
 inline bool receive_arms = false;
+inline bool receive_hands = false;
 inline bool disable_collisions = false;
 inline bool render_collisions = false;
 
@@ -134,6 +135,7 @@ inline po::variables_map helper(int argc, char** argv)
         ("log", "record log file")
         ("network,n", po::value<std::string>()->default_value(""), "dds network interface")
         ("receive-arms", "receive arm joint targets via LCM (channel: arm_action)")
+        ("receive-hands", "receive Inspire hand targets via LCM and publish DDS (channel: inspire_hand_action)")
         ("disable-collisions", "disable MuJoCo arm collision checking at runtime")
         ("render-collisions", "open MuJoCo viewer showing collision capsules and contacts")
         ;
@@ -165,6 +167,7 @@ inline po::variables_map helper(int argc, char** argv)
     }
 
     receive_arms = vm.count("receive-arms") > 0;
+    receive_hands = vm.count("receive-hands") > 0;
     disable_collisions = vm.count("disable-collisions") > 0;
     render_collisions = vm.count("render-collisions") > 0;
 
