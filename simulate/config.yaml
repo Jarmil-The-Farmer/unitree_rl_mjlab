@@ -29,10 +29,10 @@ enable_elastic_band: 0 # Virtual spring band, used for lifting h1
 image_server:
   enable: 1
   port: 5555
-  fps: 30
+  fps: 24
   width: 1280
   height: 1072
-  jpeg_quality: 80
+  jpeg_quality: 70
   camera: "head_cam"
 
 # Fake Inspire Hand Modbus TCP endpoint for simulation. It accepts the same
