@@ -153,6 +153,49 @@ REGISTER_OBSERVATION(velocity_height_commands)
     return obs;
 }
 
+REGISTER_OBSERVATION(velocity_height_waist_commands)
+{
+    std::vector<float> obs(5);
+    auto & joystick = env->robot->data.joystick;
+
+    const auto cfg = env->cfg["commands"]["base_velocity"];
+    const auto ranges = cfg["ranges"];
+
+    obs[0] = std::clamp(joystick->ly(), ranges["lin_vel_x"][0].as<float>(), ranges["lin_vel_x"][1].as<float>());
+    obs[1] = std::clamp(-joystick->lx(), ranges["lin_vel_y"][0].as<float>(), ranges["lin_vel_y"][1].as<float>());
+    obs[2] = std::clamp(-joystick->rx(), ranges["ang_vel_z"][0].as<float>(), ranges["ang_vel_z"][1].as<float>());
+
+    float default_height = cfg["default_height"].as<float>();
+    float min_height = ranges["base_height"][0].as<float>();
+    float max_height = ranges["base_height"][1].as<float>();
+
+    // Asymmetric height mapping (same as velocity_height_commands).
+    float ry = joystick->ry();
+    float height = (ry < 0)
+        ? default_height + ry * (default_height - min_height)
+        : default_height + ry * (max_height - default_height);
+    obs[3] = std::clamp(height, min_height, max_height);
+
+    // Waist_yaw target: accumulated in env state. D-pad left/right buttons
+    // adjust at ``waist_yaw_speed`` rad/s. External teleop sources (e.g.
+    // headset bridge) can overwrite ``env->waist_yaw_target`` directly
+    // before the observation is computed.
+    float wy_min = ranges["waist_yaw"][0].as<float>();
+    float wy_max = ranges["waist_yaw"][1].as<float>();
+    float wy_speed = cfg["waist_yaw_speed"]
+        ? cfg["waist_yaw_speed"].as<float>()
+        : 1.5f;
+    int dpad_x = 0;
+    if (joystick->left.pressed)  dpad_x -= 1;
+    if (joystick->right.pressed) dpad_x += 1;
+    env->waist_yaw_target += dpad_x * wy_speed * env->step_dt;
+    env->waist_yaw_target = std::clamp(env->waist_yaw_target, wy_min, wy_max);
+    env->waist_yaw_drive_enabled = true;
+
+    obs[4] = env->waist_yaw_target;
+    return obs;
+}
+
 REGISTER_OBSERVATION(gait_phase)
 {
     float period = params["period"].as<float>();

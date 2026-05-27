@@ -455,6 +455,23 @@ void State_RLBase::run()
     // only controls a subset of joints (e.g. legs/waist but not arms).
     auto num_action_joints = std::min(action.size(), env->robot->data.joint_ids_map.size());
 
+    // Optional: action term's joint_ids gives the motor index for each
+    // action output. Required when the action set is non-contiguous (e.g.
+    // legs + waist_roll + waist_pitch, skipping waist_yaw which is driven
+    // externally). When absent, fall back to joint_ids_map[i] = motor i.
+    static std::vector<int> action_joint_ids;
+    static bool action_joint_ids_loaded = false;
+    if (!action_joint_ids_loaded) {
+        try {
+            action_joint_ids =
+                env->cfg["actions"]["JointPositionAction"]["joint_ids"]
+                    .as<std::vector<int>>();
+        } catch (const std::exception&) {
+            action_joint_ids.clear();
+        }
+        action_joint_ids_loaded = true;
+    }
+
     // Rate-limit: interpolate max delta from tight (startup) to permissive.
     // At 50Hz: 0.01 rad/step = 0.5 rad/s, 0.2 rad/step = 10 rad/s.
     constexpr float MAX_DELTA_START = 0.01f;   // 0.5 rad/s
@@ -476,7 +493,11 @@ void State_RLBase::run()
     }
 
     for(size_t i(0); i < num_action_joints; i++) {
-        int motor_id = env->robot->data.joint_ids_map[i];
+        // Use action.joint_ids when set (action[i] → motor at that ID);
+        // otherwise default to the joint_ids_map[i] convention.
+        int motor_id = action_joint_ids.empty()
+            ? env->robot->data.joint_ids_map[i]
+            : action_joint_ids[i];
         float current_cmd = lowcmd->msg_.motor_cmd()[motor_id].q();
         float desired = action[i];
         float delta = desired - current_cmd;
@@ -484,6 +505,42 @@ void State_RLBase::run()
         if (delta > max_delta) delta = max_delta;
         if (delta < -max_delta) delta = -max_delta;
         lowcmd->msg_.motor_cmd()[motor_id].q() = current_cmd + delta;
+    }
+
+    // Externally-driven waist_yaw: when the active task uses the 5D command
+    // (set by the velocity_height_waist_commands observation), motor 12
+    // (waist_yaw) is NOT in the action set and must be PD-driven directly to
+    // the target value the operator/headset commands.
+    if (env->waist_yaw_drive_enabled) {
+        constexpr int waist_yaw_motor = 12;
+        // Find waist_yaw position in joint_ids_map to look up its kp/kd
+        // entry in the (29-entry) deploy stiffness/damping arrays.
+        int wy_cfg_idx = -1;
+        for (size_t k = 0; k < env->robot->data.joint_ids_map.size(); ++k) {
+            if ((int)env->robot->data.joint_ids_map[k] == waist_yaw_motor) {
+                wy_cfg_idx = (int)k;
+                break;
+            }
+        }
+        const auto & kp_arr = env->robot->data.joint_stiffness;
+        const auto & kd_arr = env->robot->data.joint_damping;
+        const bool have_gains = wy_cfg_idx >= 0
+            && (int)kp_arr.size() > wy_cfg_idx
+            && (int)kd_arr.size() > wy_cfg_idx;
+        if (have_gains) {
+            // Rate-limit the waist_yaw target the same way as policy actions
+            // so a sudden headset jump doesn't crack the joint.
+            float current_cmd = lowcmd->msg_.motor_cmd()[waist_yaw_motor].q();
+            float desired = env->waist_yaw_target;
+            float delta = desired - current_cmd;
+            if (delta > max_delta) delta = max_delta;
+            if (delta < -max_delta) delta = -max_delta;
+            lowcmd->msg_.motor_cmd()[waist_yaw_motor].q() = current_cmd + delta;
+            lowcmd->msg_.motor_cmd()[waist_yaw_motor].kp() = kp_arr[wy_cfg_idx];
+            lowcmd->msg_.motor_cmd()[waist_yaw_motor].kd() = kd_arr[wy_cfg_idx];
+            lowcmd->msg_.motor_cmd()[waist_yaw_motor].dq() = 0;
+            lowcmd->msg_.motor_cmd()[waist_yaw_motor].tau() = 0;
+        }
     }
 
 #ifdef WITH_LCM_ARMS

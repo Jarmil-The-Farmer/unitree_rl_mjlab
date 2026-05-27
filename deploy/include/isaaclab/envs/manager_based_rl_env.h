@@ -50,6 +50,8 @@ public:
     void reset()
     {
         global_phase = 0;
+        waist_yaw_target = 0.0f;
+        waist_yaw_drive_enabled = false;
         episode_length = 0;
         robot->update();
         action_manager->reset();
@@ -75,6 +77,12 @@ public:
     std::unique_ptr<Algorithms> alg;
     long episode_length = 0;
     float global_phase = 0.0f;
+    // Externally-driven waist_yaw target (5D-command teleop tasks). The
+    // velocity_height_waist_commands observation accumulates it from joystick
+    // (or external teleop) and State_RLBase writes it to motor 12 every step
+    // when ``waist_yaw_drive_enabled`` is true.
+    float waist_yaw_target = 0.0f;
+    bool waist_yaw_drive_enabled = false;
 };
 
 };
