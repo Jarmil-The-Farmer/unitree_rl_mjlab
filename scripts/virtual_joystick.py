@@ -5,7 +5,8 @@ Drop-in replacement for JoystickReader. Uses tkinter (no extra deps).
 Controls:
   Left pad  / WASD        : lin_vel_x, lin_vel_y
   Right pad / Arrow keys   : ang_vel_z, height (ry)
-  D-pad     / Q (up) E (down) : shoulder pitch (hold)
+  D-pad up/down / Q (up) E (down)    : shoulder pitch (hold)
+  D-pad left/right / Z (left) C (right) : waist yaw (hold; teleop tasks only)
   Keys 1,2,3,4            : toggle buttons 0–3 (Cross, Circle, Triangle, Square)
   Space                   : zero all axes (emergency stop)
 """
@@ -52,13 +53,14 @@ class VirtualJoystickReader:
     self._ly = 0.0  # left     / right
     self._rz = 0.0  # rotation
     self._ry = 0.0  # height
-    self._dpad_y = 0.0  # D-pad Y: up = -1, down = +1
+    self._dpad_x = 0.0  # D-pad X: left = -1, right = +1 (waist yaw)
+    self._dpad_y = 0.0  # D-pad Y: up = -1, down = +1 (shoulder pitch)
     self._button_toggles: dict[int, bool] = {}
     self._lock = threading.Lock()
 
     # Keyboard state tracking.
     self._keys_down: set[str] = set()
-    # Mouse-held D-pad direction: None, "up", or "down".
+    # Mouse-held D-pad direction: None, "up", "down", "left", or "right".
     self._dpad_mouse: str | None = None
 
     # Start GUI in its own thread.
@@ -74,6 +76,11 @@ class VirtualJoystickReader:
     """Returns D-pad Y axis: -1 = up, +1 = down, 0 = neutral."""
     with self._lock:
       return self._dpad_y
+
+  def get_dpad_x(self) -> float:
+    """Returns D-pad X axis: -1 = left, +1 = right, 0 = neutral."""
+    with self._lock:
+      return self._dpad_x
 
   def get_button_toggle(self, button: int) -> bool:
     with self._lock:
@@ -121,6 +128,23 @@ class VirtualJoystickReader:
     )
     canvas.create_text(DPAD_CX, dpad_bot + DPAD_BTN_H // 2,
                        text="\u25bc", fill="#ccc", font=("sans", 14))
+    # Left / Right arrows for waist yaw (placed alongside up arrow).
+    dpad_left_x = DPAD_CX - DPAD_BTN_W - DPAD_GAP // 2 - DPAD_BTN_W // 2
+    dpad_right_x = DPAD_CX + DPAD_GAP // 2 + DPAD_BTN_W // 2
+    self._dpad_left_rect = canvas.create_rectangle(
+      dpad_left_x, dpad_top,
+      dpad_left_x + DPAD_BTN_W, dpad_top + DPAD_BTN_H,
+      fill="#334", outline="#555", width=2,
+    )
+    canvas.create_text(dpad_left_x + DPAD_BTN_W // 2, dpad_top + DPAD_BTN_H // 2,
+                       text="\u25c0", fill="#ccc", font=("sans", 14))
+    self._dpad_right_rect = canvas.create_rectangle(
+      dpad_right_x, dpad_top,
+      dpad_right_x + DPAD_BTN_W, dpad_top + DPAD_BTN_H,
+      fill="#334", outline="#555", width=2,
+    )
+    canvas.create_text(dpad_right_x + DPAD_BTN_W // 2, dpad_top + DPAD_BTN_H // 2,
+                       text="\u25b6", fill="#ccc", font=("sans", 14))
     # Store rects for hit-test.
     self._dpad_up_bbox = (
       DPAD_CX - DPAD_BTN_W // 2, dpad_top,
@@ -130,8 +154,16 @@ class VirtualJoystickReader:
       DPAD_CX - DPAD_BTN_W // 2, dpad_bot,
       DPAD_CX + DPAD_BTN_W // 2, dpad_bot + DPAD_BTN_H,
     )
+    self._dpad_left_bbox = (
+      dpad_left_x, dpad_top,
+      dpad_left_x + DPAD_BTN_W, dpad_top + DPAD_BTN_H,
+    )
+    self._dpad_right_bbox = (
+      dpad_right_x, dpad_top,
+      dpad_right_x + DPAD_BTN_W, dpad_top + DPAD_BTN_H,
+    )
     canvas.create_text(DPAD_CX, dpad_bot + DPAD_BTN_H + 14,
-                       text="Shoulder (Q/E)", fill="#aaa", font=("sans", 9))
+                       text="Shoulder Q/E  |  Waist Z/C", fill="#aaa", font=("sans", 9))
 
     # ── PS4 button diamond (right side) ──────────────────────────────
     # pygame mapping: 0=Cross, 1=Circle, 2=Triangle, 3=Square
@@ -218,6 +250,18 @@ class VirtualJoystickReader:
       with self._lock:
         self._dpad_y = 1.0
       return
+    if self._in_rect(event.x, event.y, self._dpad_left_bbox):
+      self._dpad_mouse = "left"
+      self._canvas.itemconfig(self._dpad_left_rect, fill="#4a90d9")
+      with self._lock:
+        self._dpad_x = -1.0
+      return
+    if self._in_rect(event.x, event.y, self._dpad_right_bbox):
+      self._dpad_mouse = "right"
+      self._canvas.itemconfig(self._dpad_right_rect, fill="#4a90d9")
+      with self._lock:
+        self._dpad_x = 1.0
+      return
 
     # PS4 buttons.
     btn_offsets = {
@@ -259,6 +303,18 @@ class VirtualJoystickReader:
       self._canvas.itemconfig(self._dpad_down_rect, fill="#334")
       with self._lock:
         self._dpad_y = 0.0
+      self._dpad_mouse = None
+      return
+    if self._dpad_mouse == "left":
+      self._canvas.itemconfig(self._dpad_left_rect, fill="#334")
+      with self._lock:
+        self._dpad_x = 0.0
+      self._dpad_mouse = None
+      return
+    if self._dpad_mouse == "right":
+      self._canvas.itemconfig(self._dpad_right_rect, fill="#334")
+      with self._lock:
+        self._dpad_x = 0.0
       self._dpad_mouse = None
       return
 
@@ -376,28 +432,38 @@ class VirtualJoystickReader:
         PAD_CY - self._ry * PAD_RADIUS,
       )
 
-    # D-pad Y via Q/E keys (only when not mouse-holding D-pad).
+    # D-pad Y via Q/E and D-pad X via Z/C (only when not mouse-holding).
     if self._dpad_mouse is None:
       dpad_y = 0.0
       if "q" in keys:
         dpad_y -= 1.0  # up
       if "e" in keys:
         dpad_y += 1.0  # down
+      dpad_x = 0.0
+      if "z" in keys:
+        dpad_x -= 1.0  # left
+      if "c" in keys:
+        dpad_x += 1.0  # right
       with self._lock:
         self._dpad_y = max(-1.0, min(1.0, dpad_y))
+        self._dpad_x = max(-1.0, min(1.0, dpad_x))
       # Visual feedback on D-pad arrows for keyboard.
       self._canvas.itemconfig(
         self._dpad_up_rect, fill="#4a90d9" if dpad_y < 0 else "#334")
       self._canvas.itemconfig(
         self._dpad_down_rect, fill="#4a90d9" if dpad_y > 0 else "#334")
+      self._canvas.itemconfig(
+        self._dpad_left_rect, fill="#4a90d9" if dpad_x < 0 else "#334")
+      self._canvas.itemconfig(
+        self._dpad_right_rect, fill="#4a90d9" if dpad_x > 0 else "#334")
 
     # Update readout text.
     with self._lock:
       lx, ly, rz, ry = self._lx, self._ly, self._rz, self._ry
-      dp = self._dpad_y
+      dpx, dpy = self._dpad_x, self._dpad_y
     self._canvas.itemconfig(
       self._readout,
-      text=f"lx={lx:+.2f}  ly={ly:+.2f}  rz={rz:+.2f}  ry={ry:+.2f}  dpad={dp:+.0f}",
+      text=f"lx={lx:+.2f}  ly={ly:+.2f}  rz={rz:+.2f}  ry={ry:+.2f}  dpad=({dpx:+.0f},{dpy:+.0f})",
     )
 
     self._root.after(20, self._update_from_keys)

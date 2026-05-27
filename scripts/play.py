@@ -373,13 +373,14 @@ _ARM_MODES = [
 class _JoystickViewer(_TermLoggingViewer):
   """NativeMujocoViewer with joystick HUD overlay and arm nudge event toggle."""
 
-  def __init__(self, env, policy, *, js_state, cmd_term, nudge_event_indices, has_height=False, weight_ctrl: _WeightController | None = None, **kwargs):
+  def __init__(self, env, policy, *, js_state, cmd_term, nudge_event_indices, has_height=False, has_waist_yaw=False, weight_ctrl: _WeightController | None = None, **kwargs):
     super().__init__(env, policy, weight_ctrl=weight_ctrl, **kwargs)
     self._js = js_state
     self._cmd_term = cmd_term
     self._nudge_indices = nudge_event_indices
     self._nudge_was_on = False
     self._has_height = has_height
+    self._has_waist_yaw = has_waist_yaw
     self._arm_mode_idx = 0
     self._prev_arm_mode_idx = 0
     # Resolve arm joint indices once.
@@ -390,6 +391,11 @@ class _JoystickViewer(_TermLoggingViewer):
     self._arm_elbow_ids = [
       i for i, n in enumerate(robot.joint_names) if "elbow" in n and "wrist" not in n
     ]
+    # Resolve waist_yaw joint index (None if absent from model).
+    self._waist_yaw_id = next(
+      (i for i, n in enumerate(robot.joint_names) if n == "waist_yaw_joint"),
+      None,
+    )
     # Disable nudge events initially (set timer to large value).
     if self._nudge_indices:
       em = self.env.unwrapped.event_manager
@@ -462,6 +468,9 @@ class _JoystickViewer(_TermLoggingViewer):
         robot.data.root_link_pos_w[self.env_idx, 2].item()
         - self.env.unwrapped.scene.env_origins[self.env_idx, 2].item()
       )
+    # Actual waist_yaw joint position for HUD.
+    if self._has_waist_yaw and self._waist_yaw_id is not None:
+      actual_waist_yaw = robot.data.joint_pos[self.env_idx, self._waist_yaw_id].item()
 
     def _patched_set_texts(overlay):
       font, pos, text_1, text_2 = overlay
@@ -484,6 +493,9 @@ class _JoystickViewer(_TermLoggingViewer):
       if self._has_height:
         text_1 += "\n \nCmd Height\nCur Height"
         text_2 += f"\n \n{cmd[3]:.2f}m\n{actual_height:.2f}m"
+      if self._has_waist_yaw and self._waist_yaw_id is not None and cmd.shape[0] >= 5:
+        text_1 += "\n \nCmd Waist\nCur Waist"
+        text_2 += f"\n \n{cmd[4]:+.2f} rad\n{actual_waist_yaw:+.2f} rad"
       original_set_texts((font, pos, text_1, text_2))
 
     v.set_texts = _patched_set_texts
@@ -674,7 +686,8 @@ def run_play(task_id: str, cfg: PlayConfig):
         "heading_align": False,
         "nudge_arms": False,
         "arm_mode": 0,  # index into _ARM_MODES
-        "shoulder_pitch": 0.0,  # accumulated via D-pad
+        "shoulder_pitch": 0.0,  # accumulated via D-pad up/down
+        "waist_yaw": 0.0,  # accumulated via D-pad left/right (teleop tasks only)
       }
       _prev_arm_btn = False
 
@@ -693,15 +706,28 @@ def run_play(task_id: str, cfg: PlayConfig):
       except Exception as e:
         print(f"[Joystick] Could not find nudge_arms events: {e}")
 
-      # Detect height-aware command (4D command vector).
-      from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg
+      # Detect height-aware command (4D command vector) and waist-yaw-aware
+      # command (5D). The 5D variant is a subclass of the 4D one, so
+      # has_height is True for both — order checks accordingly.
+      from src.tasks.velocity.mdp.velocity_command import (
+        UniformVelocityHeightCommandCfg,
+        UniformVelocityHeightWaistCommandCfg,
+      )
       has_height = isinstance(cmd_term.cfg, UniformVelocityHeightCommandCfg)
+      has_waist_yaw = isinstance(cmd_term.cfg, UniformVelocityHeightWaistCommandCfg)
       if has_height:
         height_min, height_max = cmd_term.cfg.ranges.base_height
         height_default = cmd_term.cfg.default_height
         # ry=0 → default_height, ry=-1 → height_min, ry=+1 → height_max
         height_range_down = height_default - height_min  # how far stick-down can go
         height_range_up = height_max - height_default    # how far stick-up can go
+      if has_waist_yaw:
+        waist_yaw_min, waist_yaw_max = cmd_term.cfg.ranges.waist_yaw
+        # Slightly widen the play range so the operator can reach a fuller
+        # waist rotation than what training sampled. PD limits still apply.
+        waist_yaw_min = min(waist_yaw_min, -1.4)
+        waist_yaw_max = max(waist_yaw_max, 1.4)
+        WAIST_YAW_SPEED = 1.5  # rad/s while D-pad held
 
       print("[Joystick] Controls:")
       print("  Left stick     : move (lin_vel_x / lin_vel_y)")
@@ -709,6 +735,8 @@ def run_play(task_id: str, cfg: PlayConfig):
       if has_height:
         print(f"  Right stick Y  : height ({height_min:.2f}–{height_max:.2f}m)")
       print("  D-pad up/down  : shoulder pitch (hold to move)")
+      if has_waist_yaw:
+        print(f"  D-pad left/right : waist yaw ({waist_yaw_min:.2f}–{waist_yaw_max:.2f} rad)")
       print("  Circle         : toggle absolute/relative velocity")
       print("  Cross (X)      : toggle heading alignment (absolute mode only)")
       print("  Square         : toggle arm nudge")
@@ -784,13 +812,27 @@ def run_play(task_id: str, cfg: PlayConfig):
             sp = js_state["shoulder_pitch"] + dpad_y * SHOULDER_SPEED * 0.02
             js_state["shoulder_pitch"] = max(SHOULDER_PITCH_MIN, min(SHOULDER_PITCH_MAX, sp))
 
+          # D-pad left/right → accumulate waist_yaw target (5D command only).
+          if has_waist_yaw:
+            try:
+              dpad_x = reader.get_dpad_x()
+            except AttributeError:
+              dpad_x = 0.0
+            if dpad_x != 0:
+              wy = js_state["waist_yaw"] + dpad_x * WAIST_YAW_SPEED * 0.02
+              js_state["waist_yaw"] = max(waist_yaw_min, min(waist_yaw_max, wy))
+            try:
+              cmd_term.vel_command_b[:, 4] = js_state["waist_yaw"]
+            except Exception:
+              pass
+
           time.sleep(0.02)
 
       t = threading.Thread(target=_joystick_loop, daemon=True)
       t.start()
       _js_viewer_kwargs = dict(
         js_state=js_state, cmd_term=cmd_term, nudge_event_indices=nudge_event_indices,
-        has_height=has_height,
+        has_height=has_height, has_waist_yaw=has_waist_yaw,
       )
     except Exception as e:
       print(f"[WARN] Joystick requested but failed to start: {e}")

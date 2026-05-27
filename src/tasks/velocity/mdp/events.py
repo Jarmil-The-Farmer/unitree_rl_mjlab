@@ -208,6 +208,33 @@ def nudge_joints_position(
     )
 
 
+def drive_joints_from_command_channel(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  command_name: str,
+  command_index: int,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+  """Write a single command-tensor channel to selected joints' PD targets.
+
+  Used for externally-driven joints (e.g. waist_yaw via headset teleop) that
+  are excluded from the RL action space. The PD chases the command target
+  directly; the policy only observes the channel and the current joint pose.
+
+  Operates on all envs every call regardless of *env_ids* — same rationale as
+  ``nudge_joints_position``: interval-event subsetting must not leave envs
+  with a stale PD target.
+  """
+  del env_ids  # Always update all envs for continuous tracking.
+  all_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+  asset: Entity = env.scene[asset_cfg.name]
+  cmd = env.command_manager.get_command(command_name)
+  assert cmd is not None, f"Command '{command_name}' not found."
+  target = cmd[all_ids, command_index]
+  for jid in asset_cfg.joint_ids:
+    asset.data.joint_pos_target[all_ids, jid] = target
+
+
 def set_joint_targets_to_default(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | None,

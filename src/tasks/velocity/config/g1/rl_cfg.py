@@ -24,6 +24,16 @@ def unitree_g1_balance_height_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   return cfg
 
 
+def unitree_g1_balance_height_waist_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create RL runner configuration for G1 balance + height + waist_yaw teleop task."""
+  cfg = unitree_g1_ppo_runner_cfg()
+  cfg.experiment_name = "g1_balance_height_waist_velocity"
+  cfg.actor.hidden_dims = (512, 512, 256)
+  cfg.critic.hidden_dims = (512, 512, 256)
+  cfg.max_iterations = 20001
+  return cfg
+
+
 def unitree_g1_balance_standing_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create RL runner configuration for Unitree G1 standing-only balance task."""
   cfg = unitree_g1_ppo_runner_cfg()

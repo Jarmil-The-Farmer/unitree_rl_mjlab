@@ -196,6 +196,48 @@ def reward_weight(
   return torch.tensor([reward_term_cfg.weight])
 
 
+class WaistYawRangeStage(TypedDict):
+  step: int
+  ranges: tuple[float, float]
+
+
+def waist_yaw_range(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor,
+  command_name: str,
+  stages: list[WaistYawRangeStage],
+) -> dict[str, torch.Tensor]:
+  """Update the waist_yaw target range on a velocity-height-waist command term.
+
+  Linearly interpolates between consecutive stages so the range widens
+  smoothly rather than jumping. Requires ``cfg.ranges.waist_yaw`` on the
+  command term (e.g. ``UniformVelocityHeightWaistCommandCfg``).
+  """
+  del env_ids  # Unused.
+  command_term = env.command_manager.get_term(command_name)
+  assert command_term is not None
+  cfg = command_term.cfg
+  step = env.common_step_counter
+
+  prev = stages[0]
+  lo, hi = prev["ranges"]
+  for stage in stages:
+    if step >= stage["step"]:
+      prev = stage
+      lo, hi = prev["ranges"]
+    else:
+      t = (step - prev["step"]) / max(stage["step"] - prev["step"], 1)
+      lo = prev["ranges"][0] + t * (stage["ranges"][0] - prev["ranges"][0])
+      hi = prev["ranges"][1] + t * (stage["ranges"][1] - prev["ranges"][1])
+      break
+
+  cfg.ranges.waist_yaw = (lo, hi)  # type: ignore[attr-defined]
+  return {
+    "waist_yaw_range_lo": torch.tensor(lo),
+    "waist_yaw_range_hi": torch.tensor(hi),
+  }
+
+
 class EventRangeStage(TypedDict):
   step: int
   ranges: tuple[float, float]

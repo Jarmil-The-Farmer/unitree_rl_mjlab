@@ -448,3 +448,48 @@ class UniformVelocityHeightCommandCfg(UniformVelocityCommandCfg):
 
   def build(self, env: ManagerBasedRlEnv) -> UniformVelocityHeightCommand:
     return UniformVelocityHeightCommand(self, env)
+
+
+class UniformVelocityHeightWaistCommand(UniformVelocityHeightCommand):
+  """Velocity + height command extended with an externally-driven waist_yaw target.
+
+  The command tensor is 5D:
+    [lin_vel_x, lin_vel_y, ang_vel_z, target_height, waist_yaw_target].
+
+  The fifth channel is *not* tracked by the RL policy: it is provided as an
+  observation so the policy can anticipate the upcoming waist pose, and a
+  separate event writes it directly into the waist_yaw PD target each step
+  (mirroring headset-driven teleop). During training the target is resampled
+  per episode (and at the standard ``resampling_time_range`` cadence) from
+  ``ranges.waist_yaw``; PD smoothing absorbs the step changes.
+  """
+
+  cfg: UniformVelocityHeightWaistCommandCfg
+
+  def __init__(self, cfg: UniformVelocityHeightWaistCommandCfg, env: ManagerBasedRlEnv):
+    super().__init__(cfg, env)
+    # Expand command buffer from 4 to 5 channels.
+    self.vel_command_b = torch.zeros(self.num_envs, 5, device=self.device)
+
+  @property
+  def command(self) -> torch.Tensor:
+    return self.vel_command_b
+
+  def _resample_command(self, env_ids: torch.Tensor) -> None:
+    super()._resample_command(env_ids)
+    r = torch.empty(len(env_ids), device=self.device)
+    self.vel_command_b[env_ids, 4] = r.uniform_(*self.cfg.ranges.waist_yaw)
+
+
+@dataclass(kw_only=True)
+class UniformVelocityHeightWaistCommandCfg(UniformVelocityHeightCommandCfg):
+  """Velocity + height + waist_yaw command config."""
+
+  @dataclass
+  class Ranges(UniformVelocityHeightCommandCfg.Ranges):
+    waist_yaw: tuple[float, float] = (-1.0, 1.0)
+
+  ranges: Ranges
+
+  def build(self, env: ManagerBasedRlEnv) -> UniformVelocityHeightWaistCommand:
+    return UniformVelocityHeightWaistCommand(self, env)
