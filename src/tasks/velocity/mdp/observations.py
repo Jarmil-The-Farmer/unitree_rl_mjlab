@@ -62,6 +62,24 @@ def payload_masses(
   return env.sim.model.body_mass[:, global_ids].to(env.device)
 
 
+def motor_temperatures(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  T_amb: float = 25.0,
+  T_scale: float = 50.0,
+) -> torch.Tensor:
+  """Simulated motor temperatures as a privileged critic observation.
+
+  Returns ``(num_envs, num_tracked_motors)`` of normalized temperatures
+  ``(T - T_amb) / T_scale``. Creates the thermal state with default cfg
+  on first call (so the observation manager can determine obs width
+  during ``_prepare_terms``).
+  """
+  from src.tasks.velocity.mdp.thermal import get_or_create as _get_thermal
+  state = _get_thermal(env, asset_cfg)
+  return (state.T - T_amb) / T_scale
+
+
 def phase(env: ManagerBasedRlEnv, period: float, command_name: str) -> torch.Tensor:
     global_phase = (env.episode_length_buf * env.step_dt) % period / period
     phase = torch.zeros(env.num_envs, 2, device=env.device)

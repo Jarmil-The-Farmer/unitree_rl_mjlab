@@ -9,6 +9,11 @@ import torch
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
+from src.tasks.velocity.mdp.thermal import (
+  MotorThermalCfg,
+  get_or_create as _get_thermal,
+)
+
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
@@ -233,6 +238,39 @@ def drive_joints_from_command_channel(
   target = cmd[all_ids, command_index]
   for jid in asset_cfg.joint_ids:
     asset.data.joint_pos_target[all_ids, jid] = target
+
+
+def reset_motor_temperatures(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  thermal_cfg: MotorThermalCfg | None = None,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+  """Reset simulated motor temperatures (and DR scales) for the given envs.
+
+  Lazily creates the thermal state on first call.
+  """
+  state = _get_thermal(env, asset_cfg, thermal_cfg)
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+  state.reset(env_ids)
+
+
+def step_motor_temperatures(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  thermal_cfg: MotorThermalCfg | None = None,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+  """Advance the motor thermal state by one sim step.
+
+  Intended to be registered with ``mode="step"`` so it fires every env step.
+  ``env_ids`` is ignored (step mode passes None and the integration must
+  run for all envs).
+  """
+  del env_ids
+  state = _get_thermal(env, asset_cfg, thermal_cfg)
+  state.step(env, env.step_dt)
 
 
 def set_joint_targets_to_default(

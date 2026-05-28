@@ -158,6 +158,34 @@ def _log_terminations(env):
       print(r)
 
 
+def _short_joint_label(name: str) -> str:
+  """Compact joint label for HUD/console (e.g. left_hip_pitch_joint -> L_hip_pitch)."""
+  name = name.removesuffix("_joint")
+  name = name.replace("left_", "L_").replace("right_", "R_")
+  return name
+
+
+def _get_motor_thermal(env):
+  unwrapped = env.unwrapped if hasattr(env, "unwrapped") else env
+  return getattr(unwrapped, "_motor_thermal", None)
+
+
+def _motor_temp_lines(env, env_idx: int, top_k: int = 4):
+  """Return list of (label, temp_celsius) for the hottest tracked motors.
+
+  Returns None if the thermal model is not active in the current config.
+  """
+  state = _get_motor_thermal(env)
+  if state is None:
+    return None
+  T = state.T[env_idx].detach().cpu()
+  order = torch.argsort(T, descending=True)
+  return [
+    (_short_joint_label(state.joint_names[i]), T[i].item())
+    for i in order[:top_k].tolist()
+  ]
+
+
 class _WeightController:
   """Console keyboard controller for payload masses in balance_weight task.
 
@@ -353,6 +381,24 @@ class _TermLoggingViewer(NativeMujocoViewer):
   def __init__(self, env, policy, *, weight_ctrl: _WeightController | None = None, **kwargs):
     super().__init__(env, policy, **kwargs)
     self._weight_ctrl = weight_ctrl
+    self._temp_print_counter = 0
+
+  def _print_motor_temps(self) -> None:
+    """Periodically print the hottest motor temperatures to console."""
+    self._temp_print_counter += 1
+    if self._temp_print_counter % 50 != 0:  # ~1 s at 50 Hz control
+      return
+    lines = _motor_temp_lines(self.env, self.env_idx, top_k=4)
+    if not lines:
+      return
+    parts = [f"{label}={t:.1f}" for label, t in lines]
+    hottest = lines[0][1]
+    flag = ""
+    if hottest >= 90.0:
+      flag = " [CRIT>90]"
+    elif hottest >= 70.0:
+      flag = " [WARN>70]"
+    print(f"[MotorT] " + "  ".join(parts) + flag)
 
   def _execute_step(self) -> bool:
     if self._weight_ctrl is not None:
@@ -360,6 +406,7 @@ class _TermLoggingViewer(NativeMujocoViewer):
     result = super()._execute_step()
     if result:
       _log_terminations(self.env)
+    self._print_motor_temps()
     return result
 
 
@@ -496,6 +543,14 @@ class _JoystickViewer(_TermLoggingViewer):
       if self._has_waist_yaw and self._waist_yaw_id is not None and cmd.shape[0] >= 5:
         text_1 += "\n \nCmd Waist\nCur Waist"
         text_2 += f"\n \n{cmd[4]:+.2f} rad\n{actual_waist_yaw:+.2f} rad"
+      temp_lines = _motor_temp_lines(self.env, self.env_idx, top_k=4)
+      if temp_lines:
+        text_1 += "\n \nMotor T (hot)"
+        text_2 += "\n \n "
+        for label, t in temp_lines:
+          mark = "!!" if t >= 90.0 else ("!" if t >= 70.0 else "")
+          text_1 += f"\n{label}"
+          text_2 += f"\n{t:.1f}C{mark}"
       original_set_texts((font, pos, text_1, text_2))
 
     v.set_texts = _patched_set_texts
@@ -544,6 +599,10 @@ def run_play(task_id: str, cfg: PlayConfig):
   if cfg.no_terminations:
     env_cfg.terminations = {}
     print("[INFO]: Terminations disabled")
+  else:
+    # Always drop the episode time-limit during play so the robot isn't
+    # reset every episode_length_s seconds (keeps fell_over etc.).
+    env_cfg.terminations.pop("time_out", None)
 
   # Check if this is a tracking task by checking for motion command.
   is_tracking_task = "motion" in env_cfg.commands and isinstance(

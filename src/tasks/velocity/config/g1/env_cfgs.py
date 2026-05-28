@@ -17,14 +17,32 @@ from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
 from src.tasks.velocity.mdp.curriculums import arm_pose_randomization_curriculum, event_ranges, reward_weight, standing_balance, waist_yaw_range
-from src.tasks.velocity.mdp.events import drive_joints_from_command_channel, nudge_joints_position, nudge_joints_velocity, randomize_arm_pose
-from src.tasks.velocity.mdp.observations import payload_masses
+from src.tasks.velocity.mdp.events import (
+  drive_joints_from_command_channel,
+  nudge_joints_position,
+  nudge_joints_velocity,
+  randomize_arm_pose,
+  reset_motor_temperatures,
+  step_motor_temperatures,
+)
+from src.tasks.velocity.mdp.observations import motor_temperatures, payload_masses
+from src.tasks.velocity.mdp.terminations import motor_overheat
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommandCfg, UniformVelocityHeightWaistCommandCfg
-from src.tasks.velocity.mdp.rewards import action_rate_l2_standing, base_ang_vel_standing, joint_acc_l2_standing, joint_deviation_l2, stand_still_lin_vel, track_base_height, track_linear_velocity_no_z
+from src.tasks.velocity.mdp.rewards import (
+  action_rate_l2_standing,
+  base_ang_vel_standing,
+  joint_acc_l2_standing,
+  joint_deviation_l2,
+  motor_overheat_penalty,
+  stand_still_lin_vel,
+  track_base_height,
+  track_linear_velocity_no_z,
+)
 from src.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
 
@@ -680,6 +698,40 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     # to specifically train stable balancing with near-static arm poses.
     {"step": 20000 * 24,  "rel_standing_envs": 0.6, "nudge_speed": 0.5, "nudge_offset_range": (-0.8, 0.8)},
   ]
+
+  # === Motor thermal simulation ===
+  # Each step integrates a per-motor first-order thermal model driven by
+  # actuator_force. Soft penalty above T_warn, hard termination above T_max.
+  # Critic sees temperatures (privileged), actor must infer from proprio.
+  cfg.events["reset_motor_temperatures"] = EventTermCfg(
+    func=reset_motor_temperatures, mode="reset",
+  )
+  cfg.events["step_motor_temperatures"] = EventTermCfg(
+    func=step_motor_temperatures, mode="step",
+  )
+  cfg.observations["critic"].terms["motor_temperatures"] = ObservationTermCfg(
+    func=motor_temperatures, params={"T_amb": 25.0, "T_scale": 50.0},
+  )
+  cfg.terminations["motor_overheat"] = TerminationTermCfg(
+    func=motor_overheat, params={"T_max": 100.0},
+  )
+  cfg.rewards["motor_overheat_penalty"] = RewardTermCfg(
+    func=motor_overheat_penalty,
+    weight=0.0,  # ramped by curriculum below
+    params={"T_warn": 70.0, "T_crit": 90.0},
+  )
+  cfg.curriculum["motor_overheat_weight"] = CurriculumTermCfg(
+    func=reward_weight,
+    params={
+      "reward_name": "motor_overheat_penalty",
+      "weight_stages": [
+        {"step": 0,           "weight": 0.0},     # let policy learn balance first
+        {"step": 3000 * 24,   "weight": -0.001},
+        {"step": 6000 * 24,   "weight": -0.005},
+        {"step": 10000 * 24,  "weight": -0.02},
+      ],
+    },
+  )
 
   if play:
     twist_cmd = cfg.commands["twist"]

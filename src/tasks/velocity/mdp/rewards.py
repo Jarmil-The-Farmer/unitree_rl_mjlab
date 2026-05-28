@@ -556,6 +556,36 @@ def joint_acc_l2_standing(
   return penalty
 
 
+def motor_overheat_penalty(
+  env: ManagerBasedRlEnv,
+  T_warn: float = 70.0,
+  T_crit: float = 90.0,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Soft penalty when simulated motor temperature exceeds ``T_warn``.
+
+  Cost grows quadratically above ``T_warn`` and has an additional sharp
+  rise above ``T_crit`` to discourage approaching the hard termination
+  threshold. Returns the per-env sum across tracked motors.
+
+  Requires that ``step_motor_temperatures`` is registered as a step event
+  on this env (otherwise the temperature buffer stays at ambient and the
+  penalty is zero).
+  """
+  from src.tasks.velocity.mdp.thermal import get_or_create as _get_thermal
+  state = _get_thermal(env, asset_cfg)
+  T = state.T
+  warn_excess = torch.clamp(T - T_warn, min=0.0)
+  crit_excess = torch.clamp(T - T_crit, min=0.0)
+  cost_per_motor = warn_excess.pow(2) + 4.0 * crit_excess.pow(2)
+  cost = cost_per_motor.sum(dim=1)
+
+  if "log" in env.extras:
+    env.extras["log"]["Metrics/motor_T_max"] = T.max()
+    env.extras["log"]["Metrics/motor_T_mean"] = T.mean()
+  return cost
+
+
 def stand_still(
         env: ManagerBasedRlEnv,
         command_name: str,
