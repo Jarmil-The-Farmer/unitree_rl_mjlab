@@ -18,7 +18,6 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.tasks.tracking.mdp import MotionCommandCfg
-from mjlab.utils.os import get_wandb_checkpoint_path
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wrappers import VideoRecorder
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
@@ -582,6 +581,25 @@ class PlayConfig:
   js: bool = False
   # If True, open a virtual GUI joystick (no physical gamepad needed).
   vjs: bool = False
+
+
+def _find_latest_checkpoint(log_root_path: Path) -> Path:
+  """Return the highest-numbered ``model_*.pt`` in the most recent run dir."""
+  if not log_root_path.exists():
+    raise FileNotFoundError(
+      f"No log directory found at {log_root_path}. Train a policy first or "
+      f"pass --checkpoint-file."
+    )
+  run_dirs = sorted(
+    (d for d in log_root_path.iterdir() if d.is_dir()), key=lambda d: d.name
+  )
+  for run_dir in reversed(run_dirs):
+    ckpts = list(run_dir.glob("model_*.pt"))
+    if ckpts:
+      return max(ckpts, key=lambda p: int(p.stem.split("_")[1]))
+  raise FileNotFoundError(
+    f"No `model_*.pt` checkpoints found under any run in {log_root_path}."
+  )
 
 
 def run_play(task_id: str, cfg: PlayConfig):
