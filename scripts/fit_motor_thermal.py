@@ -30,21 +30,26 @@ from collections import defaultdict
 import numpy as np
 from scipy.optimize import least_squares
 
-# Joint (short name) -> motor type. Mirrors g1_constants.py actuator groups.
-# Short names match scripts/log_motor_thermal.py::_short (L_/R_ prefixes).
-def _motor_type(short_name: str) -> str | None:
-  n = short_name
-  if "hip_pitch" in n or "hip_yaw" in n or "waist_yaw" in n:
-    return "7520_14"
-  if "hip_roll" in n or "knee" in n:
-    return "7520_22"
-  if "ankle" in n or "waist_pitch" in n or "waist_roll" in n:
-    return "5020"  # paired 2x5020 on the linkage; folded into gain G
-  if "shoulder" in n or "elbow" in n or "wrist_roll" in n:
-    return "5020"
-  if "wrist_pitch" in n or "wrist_yaw" in n:
-    return "4010"
-  return None
+
+def _function(short_name: str) -> str:
+  """Joint function key (left/right share params). Matches thermal.py keys.
+
+  Short names use the L_/R_ prefixes from log_motor_thermal.py::_short.
+  """
+  return short_name.replace("L_", "").replace("R_", "")
+
+
+# Coupled groups: each motor's winding is heated by the COMBINED squared
+# torque of the whole group (shared physical motors via 4-bar linkage).
+# Keyed by short name -> tuple of short names whose tau drives this one.
+def _torque_sources(short_name: str) -> tuple[str, ...]:
+  fn = _function(short_name)
+  if fn in ("waist_pitch", "waist_roll"):
+    return ("waist_pitch", "waist_roll")
+  if fn in ("ankle_pitch", "ankle_roll"):
+    side = "L_" if short_name.startswith("L_") else "R_"
+    return (f"{side}ankle_pitch", f"{side}ankle_roll")
+  return (short_name,)
 
 
 def _load_csv(path: str) -> dict[str, np.ndarray]:
@@ -95,12 +100,20 @@ def _fit_joint(tau: np.ndarray, temp: np.ndarray, t: np.ndarray,
     sim = _simulate(tau, t, G, tau_th, T_amb, T0)
     return sim - temp
 
-  # Initial guess: gain from steady-state-ish, tau_th ~ 90 s.
+  # Initial guess: gain from steady-state-ish, tau_th ~ 40 s.
   tau_rms2 = float(np.mean(tau ** 2)) or 1.0
   G0 = max((temp.max() - temp.min()) / tau_rms2, 1e-4)
-  p0 = [G0, np.log(90.0), T0 - 5.0 if t_amb_fixed is None else t_amb_fixed]
-  lb = [1e-5, np.log(5.0), 10.0 if t_amb_fixed is None else t_amb_fixed - 1e-6]
-  ub = [10.0, np.log(2000.0), 50.0 if t_amb_fixed is None else t_amb_fixed + 1e-6]
+  if t_amb_fixed is None:
+    amb_lb, amb_ub = 10.0, 50.0
+    # The motor may start already hot, so anchor the ambient guess to the
+    # coldest observed temperature, clamped into the bounds.
+    amb_guess = float(np.clip(min(T0 - 5.0, float(temp.min())), amb_lb, amb_ub))
+  else:
+    amb_lb, amb_ub = t_amb_fixed - 1e-6, t_amb_fixed + 1e-6
+    amb_guess = t_amb_fixed
+  p0 = [G0, np.log(40.0), amb_guess]
+  lb = [1e-5, np.log(2.0), amb_lb]
+  ub = [10.0, np.log(2000.0), amb_ub]
   try:
     res = least_squares(resid, p0, bounds=(lb, ub), max_nfev=4000)
   except Exception:
@@ -132,7 +145,7 @@ def main() -> None:
     paths += sorted(glob.glob(pat)) or [pat]
 
   prefix = "Twind_" if args.channel == "winding" else "Tcase_"
-  by_type: dict[str, list[dict]] = defaultdict(list)
+  by_function: dict[str, list[dict]] = defaultdict(list)
   per_joint_rows: list[tuple] = []
   plot_data: list[tuple] = []
 
@@ -140,21 +153,34 @@ def main() -> None:
     data = _load_csv(path)
     header = list(data.keys())
     shorts = _joint_short_names(header)
+    t = data.get("t_s")
     for s in shorts:
-      tau = data.get(f"tau_{s}")
       temp = data.get(f"{prefix}{s}")
-      t = data.get("t_s")
-      if tau is None or temp is None or t is None:
+      if temp is None or t is None:
         continue
-      fit = _fit_joint(tau, temp, t, args.t_amb)
+      # Driving torque: combined over the coupled group (shared physical
+      # motors). tau_drive**2 == sum of source tau**2, matching the sim model.
+      srcs = _torque_sources(s)
+      sq = None
+      missing = False
+      for src in srcs:
+        col = data.get(f"tau_{src}")
+        if col is None:
+          missing = True
+          break
+        sq = col ** 2 if sq is None else sq + col ** 2
+      if missing or sq is None:
+        continue
+      tau_drive = np.sqrt(sq)
+      fit = _fit_joint(tau_drive, temp, t, args.t_amb)
       if fit is None:
         continue
-      mtype = _motor_type(s)
-      per_joint_rows.append((path.split("/")[-1], s, mtype, fit))
-      if mtype is not None:
-        by_type[mtype].append(fit)
+      fn = _function(s)
+      fit["coupled"] = len(srcs) > 1
+      per_joint_rows.append((path.split("/")[-1], s, fn, fit))
+      by_function[fn].append(fit)
       if args.plot:
-        plot_data.append((path, s, mtype, tau, temp, t, fit))
+        plot_data.append((path, s, fn, tau_drive, temp, t, fit))
 
   if not per_joint_rows:
     print("No fittable joints found. Need logs where temperature actually "
@@ -163,37 +189,37 @@ def main() -> None:
 
   # Per-joint table.
   print(f"\n=== Per-joint fits (channel={args.channel}) ===")
-  print(f"{'file':<28}{'joint':<16}{'type':<9}"
-        f"{'G':>10}{'tau_th[s]':>11}{'T_amb':>8}{'T_max':>8}"
-        f"{'tau_rms':>9}{'rmse':>7}{'dur[s]':>8}")
-  for fname, s, mtype, fit in per_joint_rows:
-    print(f"{fname:<28}{s:<16}{str(mtype):<9}"
-          f"{fit['G']:>10.4f}{fit['tau_th']:>11.1f}{fit['T_amb']:>8.1f}"
-          f"{fit['T_max']:>8.0f}{fit['tau_rms']:>9.2f}{fit['rmse']:>7.2f}"
-          f"{fit['dur_s']:>8.0f}")
+  print(f"{'file':<22}{'joint':<16}{'function':<13}{'cpl':<4}"
+        f"{'G':>9}{'tau_th[s]':>10}{'T_amb':>7}{'T_max':>7}"
+        f"{'tau_rms':>8}{'rmse':>6}{'dur[s]':>7}")
+  for fname, s, fn, fit in per_joint_rows:
+    print(f"{fname:<22}{s:<16}{fn:<13}{'Y' if fit['coupled'] else '.':<4}"
+          f"{fit['G']:>9.4f}{fit['tau_th']:>10.1f}{fit['T_amb']:>7.1f}"
+          f"{fit['T_max']:>7.0f}{fit['tau_rms']:>8.2f}{fit['rmse']:>6.2f}"
+          f"{fit['dur_s']:>7.0f}")
 
-  # Aggregate per motor type (median, weighted by signal would be nicer but
-  # median is robust to one bad joint).
-  print(f"\n=== Suggested DEFAULT_PARAMS (channel={args.channel}) ===")
-  print("# Paste into src/tasks/velocity/mdp/thermal.py (R_th fixed to 1.0,")
-  print("# k = fitted gain G). Re-check T_warn/T_crit/T_max against T_max above.")
-  print("DEFAULT_PARAMS = {")
-  for mtype in ("5020", "7520_14", "7520_22", "4010"):
-    fits = by_type.get(mtype)
+  # Aggregate per joint function (median across left/right and logs).
+  print(f"\n=== Suggested params per function (channel={args.channel}) ===")
+  print("# Paste/merge into DEFAULT_PARAMS in src/tasks/velocity/mdp/thermal.py")
+  print("# (R_th fixed to 1.0, k = fitted gain G). Coupled joints (waist,")
+  print("# ankle) were fit against combined group torque.")
+  for fn in ("hip_pitch", "hip_roll", "hip_yaw", "knee", "ankle_pitch",
+             "ankle_roll", "waist_yaw", "waist_pitch", "waist_roll"):
+    fits = by_function.get(fn)
     if not fits:
       continue
     G = float(np.median([f["G"] for f in fits]))
     tau_th = float(np.median([f["tau_th"] for f in fits]))
     T_amb = float(np.median([f["T_amb"] for f in fits]))
-    print(f'  "{mtype}": MotorThermalParams(k={G:.5f}, R_th=1.0, '
-          f'tau_th={tau_th:.1f}),  # n={len(fits)}, T_amb~{T_amb:.1f}')
-  print("}")
+    Tmax = max(f["T_max"] for f in fits)
+    print(f'  "{fn}": MotorThermalParams(k={G:.4f}, R_th=1.0, '
+          f'tau_th={tau_th:.1f}),  # n={len(fits)} Tmax~{Tmax:.0f} T_amb~{T_amb:.1f}')
 
   if args.plot and plot_data:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    for path, s, mtype, tau, temp, t, fit in plot_data:
+    for path, s, fn, tau, temp, t, fit in plot_data:
       m = np.isfinite(tau) & np.isfinite(temp) & np.isfinite(t)
       tau, temp, t = tau[m], temp[m], t[m]
       sim = _simulate(tau, t, fit["G"], fit["tau_th"], fit["T_amb"],
@@ -204,9 +230,10 @@ def main() -> None:
       ax1.set_xlabel("t [s]"); ax1.set_ylabel("T [C]")
       ax2 = ax1.twinx()
       ax2.plot(t, tau, "b-", alpha=0.3, lw=0.8)
-      ax2.set_ylabel("tau_est [N·m]", color="b")
+      ax2.set_ylabel("tau_drive [N·m]", color="b")
       ax1.legend(loc="upper left")
-      ax1.set_title(f"{s} ({mtype})  G={fit['G']:.4f} tau_th={fit['tau_th']:.0f}s "
+      cpl = " (coupled)" if fit["coupled"] else ""
+      ax1.set_title(f"{s} [{fn}{cpl}]  G={fit['G']:.4f} tau_th={fit['tau_th']:.0f}s "
                     f"rmse={fit['rmse']:.2f}")
       out = f"{path.rsplit('.', 1)[0]}__{s}.png"
       fig.tight_layout(); fig.savefig(out, dpi=110); plt.close(fig)

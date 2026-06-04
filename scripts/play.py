@@ -640,19 +640,12 @@ def run_play(task_id: str, cfg: PlayConfig):
         raise FileNotFoundError(f"Checkpoint file not found: {resume_path}")
       print(f"[INFO]: Loading checkpoint: {resume_path.name}")
     else:
-      if cfg.wandb_run_path is None:
-        raise ValueError(
-          "`wandb_run_path` is required when `checkpoint_file` is not provided."
-        )
-      resume_path, was_cached = get_wandb_checkpoint_path(
-        log_root_path, Path(cfg.wandb_run_path)
-      )
-      # Extract run_id and checkpoint name from path for display.
-      run_id = resume_path.parent.name
-      checkpoint_name = resume_path.name
-      cached_str = "cached" if was_cached else "downloaded"
+      # No checkpoint specified: pick the latest checkpoint from the most
+      # recent run directory under the experiment's log root.
+      resume_path = _find_latest_checkpoint(log_root_path)
       print(
-        f"[INFO]: Loading checkpoint: {checkpoint_name} (run: {run_id}, {cached_str})"
+        f"[INFO]: No checkpoint specified, using latest: {resume_path} "
+        f"(run: {resume_path.parent.name})"
       )
     log_dir = resume_path.parent
 

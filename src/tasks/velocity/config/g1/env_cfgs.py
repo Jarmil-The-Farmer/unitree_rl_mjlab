@@ -709,16 +709,19 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
   cfg.events["step_motor_temperatures"] = EventTermCfg(
     func=step_motor_temperatures, mode="step",
   )
+  # Thresholds in winding-temperature scale. Real Unitree hardware limit is
+  # ~120 C; logs show the waist can hit 130 C in ~30 s. Keep policy well
+  # below the limit: penalize from 80, sharp penalty at 100, terminate at 115.
   cfg.observations["critic"].terms["motor_temperatures"] = ObservationTermCfg(
-    func=motor_temperatures, params={"T_amb": 25.0, "T_scale": 50.0},
+    func=motor_temperatures, params={"T_amb": 30.0, "T_scale": 60.0},
   )
   cfg.terminations["motor_overheat"] = TerminationTermCfg(
-    func=motor_overheat, params={"T_max": 100.0},
+    func=motor_overheat, params={"T_max": 115.0},
   )
   cfg.rewards["motor_overheat_penalty"] = RewardTermCfg(
     func=motor_overheat_penalty,
     weight=0.0,  # ramped by curriculum below
-    params={"T_warn": 70.0, "T_crit": 90.0},
+    params={"T_warn": 80.0, "T_crit": 100.0},
   )
   cfg.curriculum["motor_overheat_weight"] = CurriculumTermCfg(
     func=reward_weight,
