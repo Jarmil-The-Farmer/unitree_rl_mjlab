@@ -131,6 +131,80 @@ def randomize_arm_pose(
     asset.data.joint_pos_target[env_ids, jid] = joint_pos[:, i]
 
 
+def randomize_arm_pose_bimodal(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  modes: tuple[dict, ...],
+  jitter: float = 0.15,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> None:
+  """Reset arms to one of N preset poses (chosen uniformly per env).
+
+  Each mode is a dict with keys ``shoulder_pitch``, ``shoulder_roll``,
+  ``elbow`` (in radians). The chosen mode is jittered uniformly by
+  ``+/- jitter`` per joint. Use this instead of ``randomize_arm_pose`` to
+  limit training to a few intended teleop configurations (e.g. arms-down
+  vs default 90 deg) and avoid extreme poses that overheat motors.
+
+  shoulder_roll is mirrored on the right side (positive = away from body
+  on the left; negated on right).
+  """
+  if env_ids is None:
+    env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+  n = len(env_ids)
+  if n == 0:
+    return
+
+  asset: Entity = env.scene[asset_cfg.name]
+  joint_ids = asset_cfg.joint_ids
+  if isinstance(joint_ids, list):
+    joint_ids_t = torch.tensor(joint_ids, device=env.device, dtype=torch.long)
+  else:
+    joint_ids_t = joint_ids
+
+  # Pick a mode per env.
+  mode_idx = torch.randint(0, len(modes), (n,), device=env.device)
+  # Build per-env target values for sp, sr, el.
+  sp = torch.empty(n, device=env.device)
+  sr = torch.empty(n, device=env.device)
+  el = torch.empty(n, device=env.device)
+  for i, m in enumerate(modes):
+    sel = mode_idx == i
+    if not sel.any():
+      continue
+    sp[sel] = m["shoulder_pitch"]
+    sr[sel] = m["shoulder_roll"]
+    el[sel] = m["elbow"]
+  if jitter > 0.0:
+    sp += torch.empty(n, device=env.device).uniform_(-jitter, jitter)
+    sr += torch.empty(n, device=env.device).uniform_(-jitter, jitter)
+    el += torch.empty(n, device=env.device).uniform_(-jitter, jitter)
+
+  num_joints = len(asset_cfg.joint_ids)
+  joint_pos = torch.zeros(n, num_joints, device=env.device)
+  all_joint_names = asset.joint_names
+  for i, jid in enumerate(asset_cfg.joint_ids):
+    name = all_joint_names[jid]
+    if "shoulder_pitch" in name:
+      joint_pos[:, i] = sp
+    elif "shoulder_roll" in name:
+      # Left: positive = away from body. Right: negate.
+      joint_pos[:, i] = -sr if "right" in name else sr
+    elif "elbow" in name:
+      joint_pos[:, i] = el
+    # Other arm joints (shoulder_yaw, wrist) stay at 0.
+
+  limits = asset.data.soft_joint_pos_limits[env_ids][:, asset_cfg.joint_ids]
+  joint_pos = torch.clamp(joint_pos, limits[:, :, 0], limits[:, :, 1])
+  joint_vel = torch.zeros_like(joint_pos)
+
+  asset.write_joint_state_to_sim(
+    joint_pos, joint_vel, env_ids=env_ids, joint_ids=joint_ids_t,
+  )
+  for i, jid in enumerate(asset_cfg.joint_ids):
+    asset.data.joint_pos_target[env_ids, jid] = joint_pos[:, i]
+
+
 def nudge_joints_position(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | None,

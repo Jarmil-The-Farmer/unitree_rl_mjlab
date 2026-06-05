@@ -26,6 +26,7 @@ from src.tasks.velocity.mdp.events import (
   nudge_joints_position,
   nudge_joints_velocity,
   randomize_arm_pose,
+  randomize_arm_pose_bimodal,
   reset_motor_temperatures,
   step_motor_temperatures,
 )
@@ -537,19 +538,22 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
   #    squatting and arm balance compensation.
   cfg.rewards["stand_still"].weight = 0.0
 
-  # 4) Pose reward: sagittal joints completely free, hip_roll slightly
-  #    loosened to allow a modest wider stance (not full asymmetry).
+  # 4) Pose reward.
+  # - knee / hip_pitch / ankle_pitch / waist_yaw left free for squat & gait.
+  # - hip_roll / ankle_roll loosened to allow a wider stance for stability.
+  # - waist_pitch TIGHTENED: a forward lean loads the waist motors near limit
+  #   (see project_motor_thermal_sim.md). Default upright is the target.
   cfg.rewards["pose"].weight = 0.3
   cfg.rewards["pose"].params["std_standing"] = {
     r".*hip_pitch.*": 10.0,
-    r".*hip_roll.*": 0.15,  # slightly loosened — modest wider stance
-    r".*hip_yaw.*": 0.1,   # keep feet pointing forward
+    r".*hip_roll.*": 0.25,  # wider stance allowed
+    r".*hip_yaw.*": 0.1,    # keep feet pointing forward
     r".*knee.*": 10.0,
     r".*ankle_pitch.*": 10.0,
-    r".*ankle_roll.*": 0.05,
+    r".*ankle_roll.*": 0.12,  # allow some ankle roll for lateral stability
     r".*waist_yaw.*": 0.08,
     r".*waist_roll.*": 0.5,
-    r".*waist_pitch.*": 10.0,
+    r".*waist_pitch.*": 0.15,  # tightened — prevent forward "vystrčený zadek" lean
   }
 
   # 5) Strong upright signal — keeps pelvis/hips level (no sideways lean).
@@ -562,9 +566,12 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     params={"command_name": "twist", "command_threshold": 0.1},
   )
 
-  # 7) Hip lateral deviation — keeps hips symmetric (both legs behave alike).
-  #    Covers hip_roll and hip_yaw to prevent asymmetric leg splay.
+  # 7) Hip lateral deviation — restricted to hip_yaw (foot direction).
+  #    hip_roll is now handled by the loosened pose reward (wider stance).
   cfg.rewards["hip_lateral_deviation"].weight = -3.0
+  cfg.rewards["hip_lateral_deviation"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=(".*_hip_yaw_joint",),
+  )
 
   # 7b) Dedicated penalty for waist_roll — prevents sideways lean at the
   #     waist. Strong weight because torso tilt looks unnatural and is
@@ -574,6 +581,17 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     weight=-5.0,
     params={
       "asset_cfg": SceneEntityCfg("robot", joint_names=("waist_roll_joint",)),
+    },
+  )
+
+  # 7b2) Dedicated penalty for waist_pitch — keeps torso upright.
+  #      Holding the arms via a forward lean loads the waist near its
+  #      thermal limit; the policy must use knees/ankles/hips for COM shift.
+  cfg.rewards["waist_pitch_deviation"] = RewardTermCfg(
+    func=joint_deviation_l2,
+    weight=-5.0,
+    params={
+      "asset_cfg": SceneEntityCfg("robot", joint_names=("waist_pitch_joint",)),
     },
   )
 
@@ -607,8 +625,23 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     },
   )
 
-  # 8) Add shoulder_roll randomization to prevent arm crossing.
-  cfg.events["randomize_arm_pose"].params["shoulder_roll_range"] = (0.2, 0.8)
+  # 8) Bimodal arm pose: each env starts in one of two intended teleop
+  #    configurations, never in the heating "arms-straight-out" combo.
+  #    - Mode 0: arms hanging down by sides (shoulder_pitch~0, elbow~0).
+  #    - Mode 1: default 90° (shoulder_pitch~-1.4, elbow~1.57).
+  #    Small jitter (±0.15 rad) per joint adds intra-mode variation.
+  cfg.events["randomize_arm_pose"] = EventTermCfg(
+    func=randomize_arm_pose_bimodal,
+    mode="reset",
+    params={
+      "modes": (
+        {"shoulder_pitch": 0.0,  "shoulder_roll": 0.1,  "elbow": 0.0},
+        {"shoulder_pitch": -1.4, "shoulder_roll": 0.2,  "elbow": 1.57},
+      ),
+      "jitter": 0.15,
+      "asset_cfg": cfg.events["randomize_arm_pose"].params["asset_cfg"],
+    },
+  )
 
   # 9) Observation history — stack proprioceptive snapshots so the policy
   # can infer dynamics (arm inertia, height regime) from recent trajectory.
@@ -685,18 +718,16 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
     },
   )
 
-  # 10) Arm nudge curriculum: ramp speed and offset range for more
-  # aggressive arm motion in later training.
+  # 10) Arm nudge curriculum — heavily softened so the policy can actually
+  # balance the two intended arm modes. Previous aggressive nudge (speed up to
+  # 2.5, range up to ±1.2) drove arms into extreme/heating poses and made
+  # standing balance impossible to learn. Now arms wander only gently around
+  # the chosen reset mode.
   cfg.curriculum["standing_balance"].params["stages"] = [
-    {"step": 0,           "rel_standing_envs": 0.2, "nudge_speed": 0.3, "nudge_offset_range": (-0.5, 0.5)},
-    {"step": 1500 * 24,   "rel_standing_envs": 0.3, "nudge_speed": 0.5, "nudge_offset_range": (-0.5, 0.5)},
-    {"step": 3000 * 24,   "rel_standing_envs": 0.4, "nudge_speed": 0.8, "nudge_offset_range": (-0.7, 0.7)},
-    {"step": 6000 * 24,   "rel_standing_envs": 0.5, "nudge_speed": 1.2, "nudge_offset_range": (-0.8, 0.8)},
-    {"step": 9000 * 24,   "rel_standing_envs": 0.5, "nudge_speed": 1.8, "nudge_offset_range": (-1.0, 1.0)},
-    {"step": 14000 * 24,  "rel_standing_envs": 0.5, "nudge_speed": 2.5, "nudge_offset_range": (-1.2, 1.2)},
-    # Late-stage "arm hold" — slow arm motion + larger fraction of standing envs
-    # to specifically train stable balancing with near-static arm poses.
-    {"step": 20000 * 24,  "rel_standing_envs": 0.6, "nudge_speed": 0.5, "nudge_offset_range": (-0.8, 0.8)},
+    {"step": 0,           "rel_standing_envs": 0.2, "nudge_speed": 0.2, "nudge_offset_range": (-0.3, 0.3)},
+    {"step": 3000 * 24,   "rel_standing_envs": 0.4, "nudge_speed": 0.3, "nudge_offset_range": (-0.4, 0.4)},
+    {"step": 6000 * 24,   "rel_standing_envs": 0.5, "nudge_speed": 0.4, "nudge_offset_range": (-0.5, 0.5)},
+    {"step": 12000 * 24,  "rel_standing_envs": 0.6, "nudge_speed": 0.5, "nudge_offset_range": (-0.5, 0.5)},
   ]
 
   # === Motor thermal simulation ===
