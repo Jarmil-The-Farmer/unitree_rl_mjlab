@@ -14,6 +14,7 @@
 #include "param.h"
 #include "physics_joystick.h"
 #include "inspire_hand_modbus_server.h"
+#include "motor_thermal.h"
 
 #define MOTOR_SENSOR_NUM 3
 
@@ -24,6 +25,9 @@ public:
     : mj_model_(model), mj_data_(data)
     {
         _check_sensor();
+        thermal_ = std::make_unique<MotorThermalSim>(model);
+        dq_prev_.assign(num_motor_, 0.0);
+        ddq_.assign(num_motor_, 0.0);
         if(param::config.print_scene_information == 1) {
             printSceneInformation();
         }
@@ -90,6 +94,43 @@ protected:
     int secondary_imu_acc_adr_ = -1;
 
     std::shared_ptr<unitree::common::UnitreeJoystick> joystick = nullptr;
+
+    // Simulated motor state auxiliaries (temperature, ddq, voltage).
+    std::unique_ptr<MotorThermalSim> thermal_;
+    std::vector<double> dq_prev_;
+    std::vector<double> ddq_;
+    double prev_sim_time_ = 0.0;
+    bool have_prev_time_ = false;
+    double bus_voltage_ = 48.0;
+    static constexpr double V_nom_ = 48.0;     // nominal bus voltage [V]
+    static constexpr double V_droop_ = 0.02;   // sag per unit RMS torque [V/Nm]
+    static constexpr uint8_t motor_mode_ = 1;  // FOC enabled (real-robot value)
+
+    // Advance the thermal model and refresh derived motor signals (joint
+    // acceleration via finite difference, battery voltage under load). Called
+    // once per bridge tick using the elapsed simulation time as dt.
+    void _update_motor_aux()
+    {
+        if(!mj_data_) return;
+        const double t = mj_data_->time;
+        double dt = have_prev_time_ ? (t - prev_sim_time_) : 0.0;
+        prev_sim_time_ = t;
+        have_prev_time_ = true;
+
+        if(thermal_) thermal_->step(mj_data_, dt);
+
+        const double inv_dt = (dt > 0.0) ? (1.0 / dt) : 0.0;
+        double load_sq = 0.0;
+        for(int i(0); i<num_motor_; i++) {
+            const double dq = mj_data_->sensordata[i + num_motor_];
+            ddq_[i] = (dq - dq_prev_[i]) * inv_dt;
+            dq_prev_[i] = dq;
+            const double tau = mj_data_->actuator_force[i];
+            load_sq += tau * tau;
+        }
+        bus_voltage_ = V_nom_ - V_droop_ * std::sqrt(load_sq);
+        if(bus_voltage_ < 0.0) bus_voltage_ = 0.0;
+    }
 
     void _check_sensor()
     {
@@ -172,10 +213,15 @@ public:
             "unitree_bridge", UT_CPU_ID_NONE, 1000, [this]() { this->run(); });
     }
 
+    // Fill message-specific extra motor fields (temperature, voltage, status).
+    // No-op by default; overridden for robots whose MotorState carries them.
+    virtual void fill_motor_state_extras(int /*i*/) {}
+
     virtual void run()
     {
         if(!mj_data_) return;
         if(lowstate->joystick) { lowstate->joystick->update(); }
+        _update_motor_aux();
         // lowcmd
         {
             std::lock_guard<std::mutex> lock(lowcmd->mutex_);
@@ -190,9 +236,13 @@ public:
         // lowstate
         if(lowstate->trylock()) {
             for(int i(0); i<num_motor_; i++) {
-                lowstate->msg_.motor_state()[i].q() = mj_data_->sensordata[i];
-                lowstate->msg_.motor_state()[i].dq() = mj_data_->sensordata[i + num_motor_];
-                lowstate->msg_.motor_state()[i].tau_est() = mj_data_->sensordata[i + 2 * num_motor_];
+                auto & ms = lowstate->msg_.motor_state()[i];
+                ms.q() = mj_data_->sensordata[i];
+                ms.dq() = mj_data_->sensordata[i + num_motor_];
+                ms.tau_est() = mj_data_->sensordata[i + 2 * num_motor_];
+                ms.ddq() = ddq_[i];
+                ms.mode() = motor_mode_;
+                fill_motor_state_extras(i);
             }
             
             if(imu_quat_adr_ >= 0) {
@@ -284,6 +334,17 @@ public:
                 param::config.inspire_hand_modbus_right_device_id);
             inspire_hand_modbus_server->start();
         }
+    }
+
+    // G1 (unitree_hg) MotorState carries two temperature channels, a bus
+    // voltage and a 32-bit status word, so populate them from the thermal sim.
+    void fill_motor_state_extras(int i) override
+    {
+        auto & ms = lowstate->msg_.motor_state()[i];
+        ms.temperature()[0] = static_cast<int16_t>(std::lround(thermal_->casing(i)));   // T0: casing
+        ms.temperature()[1] = static_cast<int16_t>(std::lround(thermal_->winding(i)));  // T1: winding
+        ms.vol() = static_cast<float>(bus_voltage_);
+        ms.motorstate() = thermal_->status(i);
     }
 
     void run() override
