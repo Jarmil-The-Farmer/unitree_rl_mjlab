@@ -1,0 +1,92 @@
+# G1 Balance Standing deploy config (Unitree-G1-Flat-Balance-Standing).
+#
+# Pure standing-only policy (NO walking). Operator commands base height and
+# waist_yaw via joystick; lin/ang velocity stay at zero.
+#
+# 5D command: [lin_vel_x, lin_vel_y, ang_vel_z, target_height, waist_yaw_target].
+# Action set: 14 joints — legs (12) + waist_roll + waist_pitch.
+# Waist_yaw (motor 12) is NOT in the action set; it is driven directly from
+# env->waist_yaw_target via State_RLBase (same mechanism as balance_height_waist).
+#
+# joint_ids_map: all 29 hardware motors in their natural order (matches the
+# observation joint order the policy was trained on).
+joint_ids_map: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28]
+step_dt: 0.02
+# 29 entries: 15 legs/waist + 14 arms. Same values as balance_height_waist1.
+stiffness: [40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 99.1, 40.2, 99.1, 28.5, 28.5, 40.2, 28.5, 28.5,
+            40, 40, 40, 40, 40, 40, 40,  40, 40, 40, 40, 40, 40, 40]
+damping:   [2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 6.3, 2.6, 6.3, 1.8, 1.8, 2.6, 1.8, 1.8,
+            5, 5, 5, 5, 5, 5, 5,  5, 5, 5, 5, 5, 5, 5]
+# 29 entries matching joint_ids_map order. Trained with all defaults at 0;
+# arms come from LCM/headset, not from a non-zero default.
+default_joint_pos: [
+  0,0,0,0,0,0,  0,0,0,0,0,0,  0,0,0,
+  0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0
+]
+
+commands:
+  base_velocity:
+    ranges:
+      # Standing-only — joystick velocity ignored (policy was never trained
+      # with non-zero velocity command).
+      lin_vel_x: [0, 0]
+      lin_vel_y: [0, 0]
+      ang_vel_z: [0, 0]
+      heading: null
+      # Full squat/stand range, matching training (0.45–0.78).
+      base_height: [0.45, 0.78]
+      # Full teleop yaw range, matching training.
+      waist_yaw: [-1.4, 1.4]
+    default_height: 0.74
+    # D-pad accumulation speed for waist_yaw_target (rad/s).
+    waist_yaw_speed: 1.5
+
+actions:
+  JointPositionAction:
+    clip: null
+    joint_names: [.*]
+    # 14 entries — same scales as balance_height_waist1 (waist_yaw omitted).
+    # Order: 6 left leg, 6 right leg, waist_roll, waist_pitch.
+    scale: [0.5475, 0.3507, 0.5475, 0.3507, 0.4386, 0.4386, 0.5475, 0.3507, 0.5475, 0.3507, 0.4386, 0.4386, 0.4386, 0.4386]
+    offset: [0,0,0,0,0,0, 0,0,0,0,0,0, 0,0]
+    # Motor IDs each action output drives. Skipping 12 leaves waist_yaw to
+    # the env->waist_yaw_target driver.
+    joint_ids: [0,1,2,3,4,5,6,7,8,9,10,11,13,14]
+
+observations:
+  base_ang_vel:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0]
+    history_length: 5
+  projected_gravity:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0]
+    history_length: 5
+  velocity_height_waist_commands:
+    params: {command_name: base_velocity}
+    clip: null
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 1
+  gait_phase:
+    params: {period: 0.6}
+    clip: null
+    scale: [1.0, 1.0]
+    history_length: 1
+  joint_pos_rel:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 5
+  joint_vel_rel:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 5
+  last_action:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 5
