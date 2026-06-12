@@ -20,7 +20,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
-from src.tasks.velocity.mdp.curriculums import arm_pose_randomization_curriculum, event_ranges, reward_weight, standing_balance, waist_yaw_range
+from src.tasks.velocity.mdp.curriculums import event_ranges, reward_weight, standing_balance, waist_yaw_range
 from src.tasks.velocity.mdp.events import (
   drive_joints_from_command_channel,
   nudge_joints_position,
@@ -778,87 +778,307 @@ def unitree_g1_flat_balance_height_env_cfg(play: bool = False) -> ManagerBasedRl
 
 
 def unitree_g1_flat_balance_standing_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create Unitree G1 standing-only balance configuration.
+  """Standing-only G1 balance with waist_yaw teleop and motor thermal sim.
 
-  Based on Unitree-G1-Flat-Balance but the robot ONLY learns to stand still
-  with arms in any position. No walking, no velocity tracking — pure standing
-  balance. Used to isolate and solve the arm-compensation problem.
+  Pure standing (no walking, no height variation). Focused on solving the
+  "robot can't stand still without bending at waist_pitch" failure mode:
+
+  - waist_pitch is TIGHTLY penalised (pose std 0.15 + dedicated deviation
+    term). The policy must use knees/ankles/hips to balance arms, not the
+    waist motor (which overheats fast — see project_motor_thermal_sim.md).
+  - hip_roll and ankle_roll loosened for wider, more stable stance.
+  - Bimodal arm reset: arms-down OR default 90 deg. No extended-forward.
+  - Externally-driven waist_yaw (5D command, channel 4 -> waist_yaw PD).
+  - Motor thermal pipeline active with overheat penalty + termination.
   """
+  import math
+
   cfg = unitree_g1_flat_balance_env_cfg(play=play)
 
-  # 100% standing — no walking at all.
-  twist_cmd = cfg.commands["twist"]
-  assert isinstance(twist_cmd, UniformVelocityCommandCfg)
-  twist_cmd.rel_standing_envs = 1.0
+  cfg.episode_length_s = 30.0
 
-  # Zero velocity ranges — never command walking.
-  twist_cmd.ranges.lin_vel_x = (0.0, 0.0)
-  twist_cmd.ranges.lin_vel_y = (0.0, 0.0)
-  twist_cmd.ranges.ang_vel_z = (0.0, 0.0)
-
-  # Remove walking/gait rewards — they're meaningless for standing.
+  # === 1) Drop walking/gait rewards — pure standing. ===
   for name in ("track_linear_velocity", "track_angular_velocity",
                "foot_gait", "foot_clearance", "foot_slip", "soft_landing"):
     cfg.rewards.pop(name, None)
+  cfg.rewards["stand_still"].weight = 0.0  # blocks knee/sagittal freedom
 
-  # Disable stand_still — it penalizes ALL joint deviations including
-  # knees/hip_pitch which the robot MUST bend to balance with arms.
-  cfg.rewards["stand_still"].weight = 0.0
-
-  # Pose reward: only penalize lateral joints (hip_roll, hip_yaw, ankle_roll,
-  # waist_yaw). All sagittal joints (hip_pitch, knee, ankle_pitch, waist_pitch)
-  # are fully free so the robot can squat and lean as needed.
-  cfg.rewards["pose"].weight = 0.3
-  cfg.rewards["pose"].params["std_standing"] = {
-    r".*hip_pitch.*": 10.0,   # completely free
-    r".*hip_roll.*": 0.08,    # slightly relaxed for stability
-    r".*hip_yaw.*": 0.08,     # slightly relaxed for stability
-    r".*knee.*": 10.0,        # completely free
-    r".*ankle_pitch.*": 10.0, # completely free
-    r".*ankle_roll.*": 0.05,
-    r".*waist_yaw.*": 0.08,
-    r".*waist_roll.*": 0.5,
-    r".*waist_pitch.*": 10.0, # completely free
+  # === 2) Drop waist_yaw from the RL action set — externally driven. ===
+  _leg_waist_no_wyaw = (
+    "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
+    "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+    "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
+    "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+    "waist_roll_joint", "waist_pitch_joint",
+  )
+  _action_scale = {
+    k: v for k, v in G1_INSPIRE_ACTION_SCALE.items()
+    if not any(arm in k for arm in (
+      "shoulder", "elbow", "wrist", "thumb", "index", "middle", "ring", "little"
+    )) and "waist_yaw" not in k
   }
+  jp = cfg.actions["joint_pos"]
+  assert isinstance(jp, JointPositionActionCfg)
+  jp.actuator_names = list(_leg_waist_no_wyaw)
+  jp.scale = _action_scale
 
-  # Body orientation: the main upright signal. Robot must keep torso upright
-  # but can achieve this through any combination of knee bend + waist lean.
-  cfg.rewards["body_orientation_l2"].weight = -5.0
+  # Fresh SceneEntityCfg per consumer (each manager resolves in-place; a
+  # shared instance would fail the second resolution's consistency check).
+  def _filter_cfg() -> SceneEntityCfg:
+    return SceneEntityCfg("robot", joint_names=_leg_waist_no_wyaw)
+  cfg.rewards["joint_acc_l2"].params["asset_cfg"] = _filter_cfg()
+  cfg.rewards["joint_pos_limits"].params["asset_cfg"] = _filter_cfg()
+  cfg.rewards["stand_still"].params["asset_cfg"] = _filter_cfg()
+  cfg.rewards["pose"].params["asset_cfg"] = _filter_cfg()
+  cfg.rewards.pop("waist_lateral_deviation", None)  # penalised waist_yaw
+  cfg.events["reset_robot_joints"].params["asset_cfg"] = _filter_cfg()
 
-  # Strong penalty for any horizontal base movement.
+  # === 3) Pose reward: tight waist_pitch, loose hip_roll/ankle_roll. ===
+  cfg.rewards["pose"].weight = 0.5  # bumped — pose is the main shape signal
+  cfg.rewards["pose"].params["std_standing"] = {
+    r".*hip_pitch.*": 10.0,
+    r".*hip_roll.*": 0.25,     # wider stance allowed
+    r".*hip_yaw.*": 0.1,       # feet pointing forward
+    r".*knee.*": 10.0,
+    r".*ankle_pitch.*": 10.0,
+    r".*ankle_roll.*": 0.12,
+    r".*waist_roll.*": 0.5,
+    r".*waist_pitch.*": 0.15,  # TIGHT — no forward lean
+  }
+  # Drop walking std dicts (not used in standing-only) safely.
+  for _std_key in ("std_walking", "std_running"):
+    if _std_key in cfg.rewards["pose"].params:
+      cfg.rewards["pose"].params[_std_key].pop(r".*waist_yaw.*", None)
+
+  # === 4) Dedicated waist-pitch + waist-roll deviation penalties. ===
+  cfg.rewards["waist_pitch_deviation"] = RewardTermCfg(
+    func=joint_deviation_l2,
+    weight=-5.0,
+    params={
+      "asset_cfg": SceneEntityCfg("robot", joint_names=("waist_pitch_joint",)),
+    },
+  )
+  cfg.rewards["waist_roll_deviation"] = RewardTermCfg(
+    func=joint_deviation_l2,
+    weight=-5.0,
+    params={
+      "asset_cfg": SceneEntityCfg("robot", joint_names=("waist_roll_joint",)),
+    },
+  )
+
+  # === 5) Hip lateral deviation: restrict to hip_yaw (foot direction). ===
+  cfg.rewards["hip_lateral_deviation"].weight = -3.0
+  cfg.rewards["hip_lateral_deviation"].params["asset_cfg"] = SceneEntityCfg(
+    "robot", joint_names=(".*_hip_yaw_joint",),
+  )
+
+  # === 6) Strong upright + horizontal-velocity-while-standing penalties. ===
+  cfg.rewards["body_orientation_l2"].weight = -8.0
   cfg.rewards["stand_still_lin_vel"] = RewardTermCfg(
     func=stand_still_lin_vel,
     weight=-10.0,
     params={"command_name": "twist", "command_threshold": 0.1},
   )
 
-  # Hip lateral deviation — relaxed slightly so robot can fine-tune stance.
-  cfg.rewards["hip_lateral_deviation"].weight = -5.0
+  # === 6b) Track commanded base height (squat/stand at different heights). ===
+  cfg.rewards["track_base_height"] = RewardTermCfg(
+    func=track_base_height,
+    weight=2.0,
+    params={"command_name": "twist", "std": math.sqrt(0.05)},
+  )
 
-  # Arm curriculum: start with fully extended arms so robot learns the hardest
-  # case first, then widen range to include all positions.
-  # Shoulder roll prevents arm crossing when raised.
-  cfg.events["randomize_arm_pose"].params["shoulder_pitch_range"] = (-1.6, -1.2)
-  cfg.events["randomize_arm_pose"].params["elbow_range"] = (1.2, 1.57)
-  cfg.events["randomize_arm_pose"].params["shoulder_roll_range"] = (0.2, 0.8)
-  cfg.curriculum["arm_pose_range"] = CurriculumTermCfg(
-    func=arm_pose_randomization_curriculum,
+  # === 7) Standing-only smoothness (anti-tremor). ===
+  cfg.rewards["action_rate_standing"] = RewardTermCfg(
+    func=action_rate_l2_standing,
+    weight=-0.05,
+    params={"command_name": "twist", "command_threshold": 0.1},
+  )
+  cfg.rewards["base_ang_vel_standing"] = RewardTermCfg(
+    func=base_ang_vel_standing,
+    weight=-0.5,
+    params={"command_name": "twist", "command_threshold": 0.1},
+  )
+  cfg.rewards["joint_acc_standing"] = RewardTermCfg(
+    func=joint_acc_l2_standing,
+    weight=-1.0e-7,
     params={
-      "reset_event_name": "randomize_arm_pose",
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg(
+        "robot",
+        joint_names=(
+          ".*_hip_.*", ".*_knee_.*", ".*_ankle_.*",
+          "waist_roll_joint", "waist_pitch_joint",
+        ),
+      ),
+    },
+  )
+
+  # === 8) Replace twist command with 5D (vx,vy,wz,height,waist_yaw),
+  #        all but waist_yaw fixed; waist_yaw curriculum widens it. ===
+  old_twist = cfg.commands["twist"]
+  assert isinstance(old_twist, UniformVelocityCommandCfg)
+  cfg.commands["twist"] = UniformVelocityHeightWaistCommandCfg(
+    entity_name=old_twist.entity_name,
+    resampling_time_range=old_twist.resampling_time_range,
+    rel_standing_envs=1.0,        # 100% standing
+    rel_heading_envs=old_twist.rel_heading_envs,
+    heading_command=old_twist.heading_command,
+    heading_control_stiffness=old_twist.heading_control_stiffness,
+    debug_vis=old_twist.debug_vis,
+    default_height=0.74,
+    ranges=UniformVelocityHeightWaistCommandCfg.Ranges(
+      lin_vel_x=(0.0, 0.0),
+      lin_vel_y=(0.0, 0.0),
+      ang_vel_z=(0.0, 0.0),
+      heading=old_twist.ranges.heading,
+      base_height=(0.45, 0.78),   # full squat/stand range
+      waist_yaw=(0.0, 0.0),       # curriculum widens
+    ),
+    viz=UniformVelocityCommandCfg.VizCfg(z_offset=1.15),
+  )
+
+  # === 9) Drive waist_yaw PD target from command channel 4 every step. ===
+  cfg.events["drive_waist_yaw"] = EventTermCfg(
+    func=drive_joints_from_command_channel,
+    mode="interval",
+    interval_range_s=(0.02, 0.04),
+    params={
+      "command_name": "twist",
+      "command_index": 4,
+      "asset_cfg": SceneEntityCfg("robot", joint_names=("waist_yaw_joint",)),
+    },
+  )
+
+  # === 10) Bimodal arm reset: arms-down OR default 90 deg, never extended. ===
+  cfg.events["randomize_arm_pose"] = EventTermCfg(
+    func=randomize_arm_pose_bimodal,
+    mode="reset",
+    params={
+      "modes": (
+        {"shoulder_pitch": 0.0,  "shoulder_roll": 0.1, "elbow": 0.0},
+        {"shoulder_pitch": -1.4, "shoulder_roll": 0.2, "elbow": 1.57},
+      ),
+      "jitter": 0.15,
+      "asset_cfg": cfg.events["randomize_arm_pose"].params["asset_cfg"],
+    },
+  )
+  cfg.curriculum.pop("arm_pose_range", None)
+  cfg.curriculum.pop("standing_balance", None)  # not applicable (100% standing)
+
+  # === 11) Minimal nudge — arms wander only gently around the reset mode. ===
+  cfg.events["nudge_arms_position"].params["speed"] = 0.2
+  cfg.events["nudge_arms_position"].params["position_offset_range"] = (-0.3, 0.3)
+
+  # === 12) Observation history (stack 5 proprio frames). ===
+  _HISTORY_LENGTH = 5
+  _HISTORY_TERMS = (
+    "base_ang_vel", "projected_gravity", "joint_pos", "joint_vel", "actions",
+  )
+  _CRITIC_EXTRA = ("base_lin_vel",)
+  for _group_name, _extras in (("actor", ()), ("critic", _CRITIC_EXTRA)):
+    _group = cfg.observations[_group_name]
+    _group.history_length = None
+    for _term_name in _HISTORY_TERMS + _extras:
+      if _term_name in _group.terms:
+        _group.terms[_term_name].history_length = _HISTORY_LENGTH
+
+  # === 13) Motor thermal simulation. ===
+  cfg.events["reset_motor_temperatures"] = EventTermCfg(
+    func=reset_motor_temperatures, mode="reset",
+  )
+  cfg.events["step_motor_temperatures"] = EventTermCfg(
+    func=step_motor_temperatures, mode="step",
+  )
+  cfg.observations["critic"].terms["motor_temperatures"] = ObservationTermCfg(
+    func=motor_temperatures, params={"T_amb": 30.0, "T_scale": 60.0},
+  )
+  cfg.terminations["motor_overheat"] = TerminationTermCfg(
+    func=motor_overheat, params={"T_max": 115.0},
+  )
+  cfg.rewards["motor_overheat_penalty"] = RewardTermCfg(
+    func=motor_overheat_penalty,
+    weight=0.0,
+    params={"T_warn": 80.0, "T_crit": 100.0},
+  )
+
+  # === 14) Curricula. ===
+  cfg.curriculum["action_rate_weight"] = CurriculumTermCfg(
+    func=reward_weight,
+    params={
+      "reward_name": "action_rate_l2",
+      "weight_stages": [
+        {"step": 0,          "weight": -0.05},
+        {"step": 5000 * 24,  "weight": -0.08},
+        {"step": 10000 * 24, "weight": -0.10},
+      ],
+    },
+  )
+  cfg.curriculum["joint_acc_weight"] = CurriculumTermCfg(
+    func=reward_weight,
+    params={
+      "reward_name": "joint_acc_l2",
+      "weight_stages": [
+        {"step": 0,          "weight": -2.5e-7},
+        {"step": 5000 * 24,  "weight": -3.5e-7},
+        {"step": 10000 * 24, "weight": -5.0e-7},
+      ],
+    },
+  )
+  cfg.curriculum["action_rate_standing_weight"] = CurriculumTermCfg(
+    func=reward_weight,
+    params={
+      "reward_name": "action_rate_standing",
+      "weight_stages": [
+        {"step": 0,          "weight": -0.05},
+        {"step": 6000 * 24,  "weight": -0.10},
+        {"step": 11000 * 24, "weight": -0.15},
+      ],
+    },
+  )
+  cfg.curriculum["joint_acc_standing_weight"] = CurriculumTermCfg(
+    func=reward_weight,
+    params={
+      "reward_name": "joint_acc_standing",
+      "weight_stages": [
+        {"step": 0,          "weight": -1.0e-7},
+        {"step": 6000 * 24,  "weight": -2.5e-7},
+        {"step": 11000 * 24, "weight": -4.0e-7},
+      ],
+    },
+  )
+  cfg.curriculum["motor_overheat_weight"] = CurriculumTermCfg(
+    func=reward_weight,
+    params={
+      "reward_name": "motor_overheat_penalty",
+      "weight_stages": [
+        {"step": 0,          "weight": 0.0},
+        {"step": 3000 * 24,  "weight": -0.001},
+        {"step": 6000 * 24,  "weight": -0.005},
+        {"step": 10000 * 24, "weight": -0.02},
+      ],
+    },
+  )
+  cfg.curriculum["waist_yaw_range"] = CurriculumTermCfg(
+    func=waist_yaw_range,
+    params={
+      "command_name": "twist",
       "stages": [
-        {"step": 0,          "shoulder_pitch_range": (-1.6, -1.2), "elbow_range": (1.2, 1.57)},
-        {"step": 3000 * 24,  "shoulder_pitch_range": (-1.6, -0.5), "elbow_range": (0.5, 1.57)},
-        {"step": 6000 * 24,  "shoulder_pitch_range": (-1.6, 0.0),  "elbow_range": (0.0, 1.57)},
+        {"step": 0,          "ranges": (0.0, 0.0)},
+        {"step": 1500 * 24,  "ranges": (0.0, 0.0)},   # hold zero — learn standing
+        {"step": 3500 * 24,  "ranges": (-0.3, 0.3)},
+        {"step": 7000 * 24,  "ranges": (-0.7, 0.7)},
+        {"step": 11000 * 24, "ranges": (-1.2, 1.2)},
+        {"step": 13500 * 24, "ranges": (-1.4, 1.4)},
+        {"step": 15000 * 24, "ranges": (-1.0, 1.0)},  # narrow back for hold
       ],
     },
   )
 
-  # Remove standing_balance curriculum — already 100% standing.
-  cfg.curriculum.pop("standing_balance", None)
-
-  # Slow nudge — arms move gently so the robot must hold each position
-  # for a long time, not just survive brief transients.
-  cfg.events["nudge_arms_position"].params["speed"] = 0.3
+  if play:
+    twist_cmd = cfg.commands["twist"]
+    assert isinstance(twist_cmd, UniformVelocityHeightWaistCommandCfg)
+    twist_cmd.ranges.waist_yaw = (-1.0, 1.0)
 
   return cfg
 
