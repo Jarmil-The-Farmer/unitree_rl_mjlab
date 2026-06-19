@@ -42,6 +42,7 @@ from src.tasks.velocity.mdp.rewards import (
   feet_slip,
   joint_acc_l2_standing,
   joint_deviation_l2,
+  leg_symmetry,
   motor_overheat_penalty,
   soft_landing,
   stand_still_lin_vel,
@@ -1089,58 +1090,74 @@ def unitree_g1_flat_balance_standing_env_cfg(play: bool = False) -> ManagerBased
 
 
 def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """G1 teleop with stable standing baseline + walking on top.
+  """G1 full teleop: stable standing/squat + walking in all directions.
 
-  Inherits from ``unitree_g1_flat_balance_standing_env_cfg`` (stable standing
-  with tight waist_pitch, bimodal arms, motor thermal, externally-driven
-  waist_yaw, 14-joint action set, full obs/reward/event setup). On top of
-  that, this config adds walking:
+  Builds on ``balance_standing`` (stable standing baseline with tight
+  waist_pitch, bimodal arms, motor thermal, externally driven waist_yaw,
+  14-action set, height tracking). Adds locomotion with several fixes that
+  the earlier version was missing:
 
-  - Velocity command range starts at zero and gradually widens via the
-    ``velocity_range`` curriculum, so the standing baseline locks in first.
-  - Walking-shape rewards (track_*_velocity, foot_gait, foot_clearance,
-    foot_slip, soft_landing) are re-added (standing had dropped them).
-  - ``standing_balance`` curriculum trades the standing/walking ratio over
-    training and keeps arm nudge gentle throughout.
+  - **Velocity-tracking weights bumped** to upstream-G1 levels (2.0/2.0) so
+    the policy has a strong incentive to follow ALL commanded directions.
+  - **Symmetric velocity ranges** (-1.0..1.0 for vx, -0.7..0.7 for vy and
+    wz) — previous (-0.5, 1.0) under-trained backward walking.
+  - **Walking pose tolerances are sensible** (not "fully free"): hip_pitch
+    0.6, knee 0.6, ankle_pitch 0.35. The sagittal joints still bend for
+    gait, but the policy gets shaping from the pose reward — without that
+    it hopped. waist_pitch stays at 0.15 (tight) at all speeds.
+  - **feet_air_time** is re-introduced (was dropped) — encourages clean
+    swing instead of double-support hopping.
+  - **leg_symmetry penalty** prevents the "one-leg-out-to-the-side" failure
+    during squat. Forces left/right mirror posture on hip/knee/ankle.
+  - **hip_lateral_deviation softened** — was too tight on hip_yaw, blocked
+    in-place rotation. Weight reduced and asset_cfg covers hip_yaw only.
+  - **Velocity curriculum has a phase-based structure** that introduces one
+    direction at a time (forward → backward → sideways → rotation) before
+    full combined commands. Earlier policy never saw clean backward-only
+    or rotation-only training and so couldn't learn them.
 
-  Joint pose tolerances are kept TIGHT at all speeds (waist_pitch=0.15,
-  hip_roll=0.25, ankle_roll=0.12). The robot must walk using knees and
-  ankles — not by leaning the torso (which overheats the waist motors).
+  Pose remains TIGHT for waist_pitch / waist_roll across all speeds. The
+  robot must walk via the legs, not by leaning the torso.
   """
   import math
 
   cfg = unitree_g1_flat_balance_standing_env_cfg(play=play)
 
-  # === 1) Walking pose tolerances == standing tolerances. ===
-  # User explicit: keep joint limits as in the standing env at all speeds.
-  # The robot must not lean at the waist even while walking/running.
-  _tight_pose_std = {
-    r".*hip_pitch.*": 10.0,
+  # === 1) Pose tolerances ===
+  # Walking: allow gait swing (hip_pitch / knee / ankle_pitch), but still
+  # shape the pose. Waist stays tight at all speeds.
+  _walking_pose_std = {
+    r".*hip_pitch.*": 0.6,
     r".*hip_roll.*": 0.25,
-    r".*hip_yaw.*": 0.1,
-    r".*knee.*": 10.0,
-    r".*ankle_pitch.*": 10.0,
-    r".*ankle_roll.*": 0.12,
+    r".*hip_yaw.*": 0.2,
+    r".*knee.*": 0.6,
+    r".*ankle_pitch.*": 0.35,
+    r".*ankle_roll.*": 0.15,
     r".*waist_roll.*": 0.5,
-    r".*waist_pitch.*": 0.15,
+    r".*waist_pitch.*": 0.15,  # tight — no forward lean
   }
-  cfg.rewards["pose"].params["std_walking"] = dict(_tight_pose_std)
-  cfg.rewards["pose"].params["std_running"] = dict(_tight_pose_std)
+  _running_pose_std = dict(_walking_pose_std)
+  _running_pose_std[r".*hip_pitch.*"] = 0.8
+  _running_pose_std[r".*knee.*"] = 0.8
+  _running_pose_std[r".*ankle_pitch.*"] = 0.45
+  cfg.rewards["pose"].params["std_walking"] = _walking_pose_std
+  cfg.rewards["pose"].params["std_running"] = _running_pose_std
 
-  # === 2) Re-add velocity tracking rewards (standing dropped them). ===
-  # Use the no-z variant so the height tracking signal isn't fought.
+  # === 2) Velocity tracking — bumped to upstream-G1 level. ===
+  # Inherited std_standing keeps tight sagittal — apply by *increasing*
+  # tracking weights so the policy has a real incentive to walk.
   cfg.rewards["track_linear_velocity"] = RewardTermCfg(
     func=track_linear_velocity_no_z,
-    weight=1.5,
+    weight=2.0,
     params={"command_name": "twist", "std": math.sqrt(0.25)},
   )
   cfg.rewards["track_angular_velocity"] = RewardTermCfg(
     func=track_angular_velocity,
-    weight=1.0,
+    weight=2.0,
     params={"command_name": "twist", "std": math.sqrt(0.5)},
   )
 
-  # === 3) Re-add foot/gait shaping rewards. ===
+  # === 3) Foot / gait shaping rewards. ===
   _foot_sites = ("left_foot", "right_foot")
   cfg.rewards["foot_gait"] = RewardTermCfg(
     func=feet_gait, weight=0.5,
@@ -1151,7 +1168,7 @@ def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerB
     },
   )
   cfg.rewards["foot_clearance"] = RewardTermCfg(
-    func=feet_clearance, weight=-1.0,
+    func=feet_clearance, weight=-2.0,
     params={
       "target_height": 0.10, "command_name": "twist",
       "command_threshold": 0.1,
@@ -1167,14 +1184,39 @@ def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerB
     },
   )
   cfg.rewards["soft_landing"] = RewardTermCfg(
-    func=soft_landing, weight=-1e-3,
+    func=soft_landing, weight=-1e-4,
     params={
       "sensor_name": "feet_ground_contact", "command_name": "twist",
       "command_threshold": 0.1,
     },
   )
+  # Air time — clean swing prevents hopping. Active while commanded to walk.
+  cfg.rewards["feet_air_time"] = RewardTermCfg(
+    func=mdp.feet_air_time,
+    weight=1.0,
+    params={
+      "sensor_name": "feet_ground_contact",
+      "threshold": 0.4,
+      "command_name": "twist",
+      "command_threshold": 0.1,
+    },
+  )
 
-  # === 4) Initial twist ranges = zero (curriculum widens). ===
+  # === 4) Symmetry penalty — prevents "one leg out" during squat. ===
+  cfg.rewards["leg_symmetry"] = RewardTermCfg(
+    func=leg_symmetry,
+    weight=-2.0,
+    params={"asset_cfg": SceneEntityCfg(
+      "robot", joint_names=(".*_hip_.*", ".*_knee_.*", ".*_ankle_.*"),
+    )},
+  )
+
+  # === 5) Soften lateral-hip deviation so in-place rotation works. ===
+  # Standing config penalised hip_yaw heavily (-3.0) which blocked rotation.
+  # Reduce and let track_angular_velocity drive rotation.
+  cfg.rewards["hip_lateral_deviation"].weight = -1.0
+
+  # === 6) Initial twist ranges = zero (curriculum widens). ===
   twist = cfg.commands["twist"]
   assert isinstance(twist, UniformVelocityHeightWaistCommandCfg)
   twist.ranges.lin_vel_x = (0.0, 0.0)
@@ -1182,26 +1224,30 @@ def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerB
   twist.ranges.ang_vel_z = (0.0, 0.0)
   twist.rel_standing_envs = 1.0  # initial; curriculum drives down
 
-  # === 5) Velocity range curriculum: zero -> full walking range. ===
-  # Phase A (0 - 3000): pure standing — consolidate the standing baseline.
-  # Phase B (3000 - 7000): gentle walking introduction.
-  # Phase C (7000 - 12000): wider walking.
-  # Phase D (12000+): full walking range.
+  # === 7) Velocity range curriculum — phase-based.
+  # Phase A (0 - 2500):   pure standing — consolidate the standing baseline.
+  # Phase B (2500 - 5000): forward-only walking (no reverse, no side, no rot).
+  # Phase C (5000 - 8000): symmetric forward+backward (no side, no rot).
+  # Phase D (8000 - 12000): + lateral (sideways).
+  # Phase E (12000 - 17000): + in-place rotation.
+  # Phase F (17000+):       full combined range.
   cfg.curriculum["velocity_range"] = CurriculumTermCfg(
     func=commands_vel,
     params={
       "command_name": "twist",
       "velocity_stages": [
-        {"step": 0,           "lin_vel_x": (0.0, 0.0),  "lin_vel_y": (0.0, 0.0),  "ang_vel_z": (0.0, 0.0)},
-        {"step": 3000 * 24,   "lin_vel_x": (-0.2, 0.3), "lin_vel_y": (-0.2, 0.2), "ang_vel_z": (-0.3, 0.3)},
-        {"step": 7000 * 24,   "lin_vel_x": (-0.4, 0.6), "lin_vel_y": (-0.3, 0.3), "ang_vel_z": (-0.6, 0.6)},
-        {"step": 12000 * 24,  "lin_vel_x": (-0.5, 1.0), "lin_vel_y": (-0.4, 0.4), "ang_vel_z": (-1.0, 1.0)},
+        {"step": 0,            "lin_vel_x": (0.0, 0.0),    "lin_vel_y": (0.0, 0.0),    "ang_vel_z": (0.0, 0.0)},
+        {"step": 2500 * 24,    "lin_vel_x": (0.0, 0.5),    "lin_vel_y": (0.0, 0.0),    "ang_vel_z": (0.0, 0.0)},
+        {"step": 5000 * 24,    "lin_vel_x": (-0.7, 0.7),   "lin_vel_y": (0.0, 0.0),    "ang_vel_z": (0.0, 0.0)},
+        {"step": 8000 * 24,    "lin_vel_x": (-0.7, 0.7),   "lin_vel_y": (-0.5, 0.5),   "ang_vel_z": (0.0, 0.0)},
+        {"step": 12000 * 24,   "lin_vel_x": (-0.7, 0.7),   "lin_vel_y": (-0.5, 0.5),   "ang_vel_z": (-0.7, 0.7)},
+        {"step": 17000 * 24,   "lin_vel_x": (-1.0, 1.0),   "lin_vel_y": (-0.7, 0.7),   "ang_vel_z": (-1.0, 1.0)},
       ],
     },
   )
 
-  # === 6) Standing/walking ratio + nudge curriculum.
-  # Keep nudge gentle throughout — user prefers stability over arm variety.
+  # === 8) Standing/walking ratio + nudge curriculum. ===
+  # Keep standing share high — user wants stable standing always.
   cfg.curriculum["standing_balance"] = CurriculumTermCfg(
     func=standing_balance,
     params={
@@ -1209,19 +1255,45 @@ def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerB
       "nudge_event_name": "nudge_arms_position",
       "stages": [
         {"step": 0,          "rel_standing_envs": 1.0, "nudge_speed": 0.2, "nudge_offset_range": (-0.3, 0.3)},
-        {"step": 3000 * 24,  "rel_standing_envs": 0.7, "nudge_speed": 0.3, "nudge_offset_range": (-0.4, 0.4)},
-        {"step": 7000 * 24,  "rel_standing_envs": 0.5, "nudge_speed": 0.4, "nudge_offset_range": (-0.5, 0.5)},
-        {"step": 12000 * 24, "rel_standing_envs": 0.4, "nudge_speed": 0.5, "nudge_offset_range": (-0.5, 0.5)},
+        {"step": 2500 * 24,  "rel_standing_envs": 0.7, "nudge_speed": 0.3, "nudge_offset_range": (-0.4, 0.4)},
+        {"step": 8000 * 24,  "rel_standing_envs": 0.5, "nudge_speed": 0.4, "nudge_offset_range": (-0.5, 0.5)},
+        {"step": 15000 * 24, "rel_standing_envs": 0.4, "nudge_speed": 0.5, "nudge_offset_range": (-0.5, 0.5)},
       ],
     },
   )
 
+  # === 9) Stretch the inherited smoothness/thermal curricula to ~25k it. ===
+  cfg.curriculum["action_rate_weight"].params["weight_stages"] = [
+    {"step": 0,           "weight": -0.05},
+    {"step": 8000 * 24,   "weight": -0.08},
+    {"step": 18000 * 24,  "weight": -0.10},
+  ]
+  cfg.curriculum["joint_acc_weight"].params["weight_stages"] = [
+    {"step": 0,           "weight": -2.5e-7},
+    {"step": 8000 * 24,   "weight": -3.5e-7},
+    {"step": 18000 * 24,  "weight": -5.0e-7},
+  ]
+  cfg.curriculum["motor_overheat_weight"].params["weight_stages"] = [
+    {"step": 0,            "weight": 0.0},
+    {"step": 5000 * 24,    "weight": -0.001},
+    {"step": 10000 * 24,   "weight": -0.005},
+    {"step": 18000 * 24,   "weight": -0.02},
+  ]
+  cfg.curriculum["waist_yaw_range"].params["stages"] = [
+    {"step": 0,            "ranges": (0.0, 0.0)},
+    {"step": 5000 * 24,    "ranges": (0.0, 0.0)},
+    {"step": 8000 * 24,    "ranges": (-0.3, 0.3)},
+    {"step": 12000 * 24,   "ranges": (-0.7, 0.7)},
+    {"step": 17000 * 24,   "ranges": (-1.2, 1.2)},
+    {"step": 22000 * 24,   "ranges": (-1.4, 1.4)},
+  ]
+
   if play:
     twist_cmd = cfg.commands["twist"]
     assert isinstance(twist_cmd, UniformVelocityHeightWaistCommandCfg)
-    twist_cmd.ranges.lin_vel_x = (-0.3, 0.5)
-    twist_cmd.ranges.lin_vel_y = (-0.3, 0.3)
-    twist_cmd.ranges.ang_vel_z = (-0.4, 0.4)
+    twist_cmd.ranges.lin_vel_x = (-0.5, 0.5)
+    twist_cmd.ranges.lin_vel_y = (-0.4, 0.4)
+    twist_cmd.ranges.ang_vel_z = (-0.5, 0.5)
     twist_cmd.ranges.waist_yaw = (-1.0, 1.0)
 
   return cfg

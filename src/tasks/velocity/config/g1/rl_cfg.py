@@ -11,6 +11,7 @@ def unitree_g1_balance_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create RL runner configuration for Unitree G1 balance/teleoperation task."""
   cfg = unitree_g1_ppo_runner_cfg()
   cfg.experiment_name = "g1_balance_velocity"
+  cfg.logger = "tensorboard"
   return cfg
 
 
@@ -21,16 +22,25 @@ def unitree_g1_balance_height_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   cfg.actor.hidden_dims = (512, 512, 256)
   cfg.critic.hidden_dims = (512, 512, 256)
   cfg.max_iterations = 25001
+  cfg.logger = "tensorboard"
   return cfg
 
 
 def unitree_g1_balance_height_waist_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-  """Create RL runner configuration for G1 balance + height + waist_yaw teleop task."""
+  """Create RL runner configuration for G1 balance + height + waist_yaw teleop task.
+
+  Uses a larger network than the standing config (3x512 layers vs the
+  default 512→256→128) because the policy has more obs (5D command, history)
+  and must learn standing + 6 walking directions + thermal awareness.
+  ~25k iterations matches the multi-phase velocity curriculum (forward →
+  reverse → side → rotation → combined) defined in the env config.
+  """
   cfg = unitree_g1_ppo_runner_cfg()
   cfg.experiment_name = "g1_balance_height_waist_velocity"
-  cfg.actor.hidden_dims = (512, 512, 256)
-  cfg.critic.hidden_dims = (512, 512, 256)
-  cfg.max_iterations = 20001
+  cfg.actor.hidden_dims = (512, 512, 512)
+  cfg.critic.hidden_dims = (512, 512, 512)
+  cfg.max_iterations = 25001
+  cfg.logger = "tensorboard"
   return cfg
 
 
@@ -38,6 +48,7 @@ def unitree_g1_balance_standing_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create RL runner configuration for Unitree G1 standing-only balance task."""
   cfg = unitree_g1_ppo_runner_cfg()
   cfg.experiment_name = "g1_balance_standing"
+  cfg.logger = "tensorboard"
   return cfg
 
 
@@ -48,6 +59,7 @@ def unitree_g1_balance_weight_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   cfg.actor.hidden_dims = (512, 512, 256)
   cfg.critic.hidden_dims = (512, 512, 256)
   cfg.max_iterations = 25001
+  cfg.logger = "tensorboard"
   return cfg
 
 
