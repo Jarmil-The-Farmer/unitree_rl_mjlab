@@ -20,7 +20,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, RayCastSensorCfg
 from mjlab.tasks.velocity import mdp
-from src.tasks.velocity.mdp.curriculums import event_ranges, reward_weight, standing_balance, waist_yaw_range
+from src.tasks.velocity.mdp.curriculums import commands_vel, event_ranges, reward_weight, standing_balance, waist_yaw_range
 from src.tasks.velocity.mdp.events import (
   drive_joints_from_command_channel,
   nudge_joints_position,
@@ -37,10 +37,15 @@ from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommand
 from src.tasks.velocity.mdp.rewards import (
   action_rate_l2_standing,
   base_ang_vel_standing,
+  feet_clearance,
+  feet_gait,
+  feet_slip,
   joint_acc_l2_standing,
   joint_deviation_l2,
   motor_overheat_penalty,
+  soft_landing,
   stand_still_lin_vel,
+  track_angular_velocity,
   track_base_height,
   track_linear_velocity_no_z,
 )
@@ -1084,178 +1089,129 @@ def unitree_g1_flat_balance_standing_env_cfg(play: bool = False) -> ManagerBased
 
 
 def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create Unitree G1 balance + height + externally-driven waist_yaw config.
+  """G1 teleop with stable standing baseline + walking on top.
 
-  Based on Unitree-G1-Flat-Balance-Height, with three differences:
+  Inherits from ``unitree_g1_flat_balance_standing_env_cfg`` (stable standing
+  with tight waist_pitch, bimodal arms, motor thermal, externally-driven
+  waist_yaw, 14-joint action set, full obs/reward/event setup). On top of
+  that, this config adds walking:
 
-  1) ``waist_yaw_joint`` is removed from the RL action set. The joint is
-     driven directly from an extra 5th command channel (``waist_yaw_target``),
-     written into the PD target every control step via the
-     ``drive_waist_yaw`` interval event. This mirrors headset-driven teleop:
-     the operator commands the waist angle, the policy only compensates for
-     the resulting torso pose.
-  2) The command tensor is 5D: ``[lin_vel_x, lin_vel_y, ang_vel_z,
-     target_height, waist_yaw_target]``. The 5th channel is sampled per
-     resample from ``ranges.waist_yaw`` (curriculum-widened).
-  3) Curriculum compressed to ~20k iterations, ending with a "slow arm
-     hold" stage so the policy refines balance with near-static extended
-     arms (the practical teleop target).
+  - Velocity command range starts at zero and gradually widens via the
+    ``velocity_range`` curriculum, so the standing baseline locks in first.
+  - Walking-shape rewards (track_*_velocity, foot_gait, foot_clearance,
+    foot_slip, soft_landing) are re-added (standing had dropped them).
+  - ``standing_balance`` curriculum trades the standing/walking ratio over
+    training and keeps arm nudge gentle throughout.
+
+  Joint pose tolerances are kept TIGHT at all speeds (waist_pitch=0.15,
+  hip_roll=0.25, ankle_roll=0.12). The robot must walk using knees and
+  ankles — not by leaning the torso (which overheats the waist motors).
   """
-  cfg = unitree_g1_flat_balance_height_env_cfg(play=play)
+  import math
 
-  cfg.episode_length_s = 30.0
+  cfg = unitree_g1_flat_balance_standing_env_cfg(play=play)
 
-  # === 1) Action set: drop waist_yaw — it's externally driven. ===
-  _leg_waist_no_wyaw = (
-    "left_hip_pitch_joint",
-    "left_hip_roll_joint",
-    "left_hip_yaw_joint",
-    "left_knee_joint",
-    "left_ankle_pitch_joint",
-    "left_ankle_roll_joint",
-    "right_hip_pitch_joint",
-    "right_hip_roll_joint",
-    "right_hip_yaw_joint",
-    "right_knee_joint",
-    "right_ankle_pitch_joint",
-    "right_ankle_roll_joint",
-    "waist_roll_joint",
-    "waist_pitch_joint",
-  )
-  _action_scale = {
-    k: v for k, v in G1_INSPIRE_ACTION_SCALE.items()
-    if not any(arm in k for arm in (
-      "shoulder", "elbow", "wrist", "thumb", "index", "middle", "ring", "little"
-    )) and "waist_yaw" not in k
+  # === 1) Walking pose tolerances == standing tolerances. ===
+  # User explicit: keep joint limits as in the standing env at all speeds.
+  # The robot must not lean at the waist even while walking/running.
+  _tight_pose_std = {
+    r".*hip_pitch.*": 10.0,
+    r".*hip_roll.*": 0.25,
+    r".*hip_yaw.*": 0.1,
+    r".*knee.*": 10.0,
+    r".*ankle_pitch.*": 10.0,
+    r".*ankle_roll.*": 0.12,
+    r".*waist_roll.*": 0.5,
+    r".*waist_pitch.*": 0.15,
   }
-  joint_pos_action = cfg.actions["joint_pos"]
-  assert isinstance(joint_pos_action, JointPositionActionCfg)
-  joint_pos_action.actuator_names = list(_leg_waist_no_wyaw)
-  joint_pos_action.scale = _action_scale
+  cfg.rewards["pose"].params["std_walking"] = dict(_tight_pose_std)
+  cfg.rewards["pose"].params["std_running"] = dict(_tight_pose_std)
 
-  # Filter joint-based rewards/events to the new (14-joint) action set.
-  # waist_yaw stays in the observation joint set (joint_pos/joint_vel terms)
-  # — the policy must see where the externally-driven waist actually is.
-  # Fresh SceneEntityCfg per consumer: each manager resolves it in-place,
-  # so a shared instance would fail the second resolution's consistency check.
-  def _filter_cfg() -> SceneEntityCfg:
-    return SceneEntityCfg("robot", joint_names=_leg_waist_no_wyaw)
-  cfg.rewards["joint_acc_l2"].params["asset_cfg"] = _filter_cfg()
-  cfg.rewards["joint_pos_limits"].params["asset_cfg"] = _filter_cfg()
-  cfg.rewards["stand_still"].params["asset_cfg"] = _filter_cfg()
-  cfg.rewards["pose"].params["asset_cfg"] = _filter_cfg()
-
-  # Drop the waist_yaw entry from pose std dicts (joint no longer in filter).
-  for _std_key in ("std_standing", "std_walking", "std_running"):
-    cfg.rewards["pose"].params[_std_key].pop(r".*waist_yaw.*", None)
-
-  # Remove waist_lateral_deviation — it penalized waist_yaw deviation.
-  cfg.rewards.pop("waist_lateral_deviation", None)
-
-  # joint_acc_standing currently includes "waist_.*"; restrict to waist_roll/pitch
-  # so accelerations of the externally-driven waist_yaw aren't penalized.
-  cfg.rewards["joint_acc_standing"].params["asset_cfg"] = SceneEntityCfg(
-    "robot",
-    joint_names=(
-      ".*_hip_.*", ".*_knee_.*", ".*_ankle_.*",
-      "waist_roll_joint", "waist_pitch_joint",
-    ),
+  # === 2) Re-add velocity tracking rewards (standing dropped them). ===
+  # Use the no-z variant so the height tracking signal isn't fought.
+  cfg.rewards["track_linear_velocity"] = RewardTermCfg(
+    func=track_linear_velocity_no_z,
+    weight=1.5,
+    params={"command_name": "twist", "std": math.sqrt(0.25)},
+  )
+  cfg.rewards["track_angular_velocity"] = RewardTermCfg(
+    func=track_angular_velocity,
+    weight=1.0,
+    params={"command_name": "twist", "std": math.sqrt(0.5)},
   )
 
-  # reset_robot_joints currently targets 15 joints (including waist_yaw).
-  # Restrict to the 14-joint set; waist_yaw qpos is zeroed by sim reset
-  # and then chased by PD via the drive_waist_yaw event.
-  cfg.events["reset_robot_joints"].params["asset_cfg"] = _filter_cfg()
-
-  # === 2) 5D command (lin_vel xyz, height, waist_yaw_target). ===
-  old_twist = cfg.commands["twist"]
-  assert isinstance(old_twist, UniformVelocityHeightCommandCfg)
-  cfg.commands["twist"] = UniformVelocityHeightWaistCommandCfg(
-    entity_name=old_twist.entity_name,
-    resampling_time_range=old_twist.resampling_time_range,
-    rel_standing_envs=old_twist.rel_standing_envs,
-    rel_heading_envs=old_twist.rel_heading_envs,
-    heading_command=old_twist.heading_command,
-    heading_control_stiffness=old_twist.heading_control_stiffness,
-    debug_vis=old_twist.debug_vis,
-    default_height=old_twist.default_height,
-    ranges=UniformVelocityHeightWaistCommandCfg.Ranges(
-      lin_vel_x=old_twist.ranges.lin_vel_x,
-      lin_vel_y=old_twist.ranges.lin_vel_y,
-      ang_vel_z=old_twist.ranges.ang_vel_z,
-      heading=old_twist.ranges.heading,
-      base_height=old_twist.ranges.base_height,
-      waist_yaw=(0.0, 0.0),  # curriculum gradually widens this from zero
-    ),
-    viz=UniformVelocityCommandCfg.VizCfg(z_offset=1.15),
-  )
-
-  # === 3) Drive waist_yaw PD target from command channel 4 every step. ===
-  cfg.events["drive_waist_yaw"] = EventTermCfg(
-    func=drive_joints_from_command_channel,
-    mode="interval",
-    interval_range_s=(0.02, 0.04),
+  # === 3) Re-add foot/gait shaping rewards. ===
+  _foot_sites = ("left_foot", "right_foot")
+  cfg.rewards["foot_gait"] = RewardTermCfg(
+    func=feet_gait, weight=0.5,
     params={
-      "command_name": "twist",
-      "command_index": 4,
-      "asset_cfg": SceneEntityCfg("robot", joint_names=("waist_yaw_joint",)),
+      "period": 0.6, "offset": [0.0, 0.5], "threshold": 0.56,
+      "command_threshold": 0.1, "command_name": "twist",
+      "sensor_name": "feet_ground_contact",
+    },
+  )
+  cfg.rewards["foot_clearance"] = RewardTermCfg(
+    func=feet_clearance, weight=-1.0,
+    params={
+      "target_height": 0.10, "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot", site_names=_foot_sites),
+    },
+  )
+  cfg.rewards["foot_slip"] = RewardTermCfg(
+    func=feet_slip, weight=-0.25,
+    params={
+      "sensor_name": "feet_ground_contact", "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot", site_names=_foot_sites),
+    },
+  )
+  cfg.rewards["soft_landing"] = RewardTermCfg(
+    func=soft_landing, weight=-1e-3,
+    params={
+      "sensor_name": "feet_ground_contact", "command_name": "twist",
+      "command_threshold": 0.1,
     },
   )
 
-  # === 4) Curriculum compressed to ~20k iterations. ===
-  # Standing-heavy throughout: deploy target is teleop where the robot stands
-  # most of the time. Adding externally-driven waist_yaw on top of all other
-  # perturbations raises the difficulty floor, so rel_standing_envs is
-  # bumped (was 0.2-0.6 in the height task) to give the policy more direct
-  # standing supervision. Last 5k iter focus on slow arm motion for the
-  # extended-arm hold case.
-  cfg.commands["twist"].rel_standing_envs = 0.3  # initial; curriculum drives it
-  cfg.curriculum["standing_balance"].params["stages"] = [
-    {"step": 0,           "rel_standing_envs": 0.3, "nudge_speed": 0.3, "nudge_offset_range": (-0.5, 0.5)},
-    {"step": 1000 * 24,   "rel_standing_envs": 0.4, "nudge_speed": 0.5, "nudge_offset_range": (-0.5, 0.5)},
-    {"step": 2500 * 24,   "rel_standing_envs": 0.5, "nudge_speed": 0.8, "nudge_offset_range": (-0.7, 0.7)},
-    {"step": 5000 * 24,   "rel_standing_envs": 0.6, "nudge_speed": 1.2, "nudge_offset_range": (-0.8, 0.8)},
-    {"step": 8000 * 24,   "rel_standing_envs": 0.6, "nudge_speed": 1.8, "nudge_offset_range": (-1.0, 1.0)},
-    {"step": 11000 * 24,  "rel_standing_envs": 0.6, "nudge_speed": 2.5, "nudge_offset_range": (-1.2, 1.2)},
-    # Late-stage arm hold — slow arm motion, more standing.
-    {"step": 15000 * 24,  "rel_standing_envs": 0.7, "nudge_speed": 0.5, "nudge_offset_range": (-0.8, 0.8)},
-  ]
-  cfg.curriculum["action_rate_weight"].params["weight_stages"] = [
-    {"step": 0,           "weight": -0.05},
-    {"step": 5000 * 24,   "weight": -0.08},
-    {"step": 10000 * 24,  "weight": -0.10},
-  ]
-  cfg.curriculum["joint_acc_weight"].params["weight_stages"] = [
-    {"step": 0,           "weight": -2.5e-7},
-    {"step": 5000 * 24,   "weight": -3.5e-7},
-    {"step": 10000 * 24,  "weight": -5.0e-7},
-  ]
-  cfg.curriculum["action_rate_standing_weight"].params["weight_stages"] = [
-    {"step": 0,           "weight": -0.05},
-    {"step": 6000 * 24,   "weight": -0.10},
-    {"step": 11000 * 24,  "weight": -0.15},
-  ]
-  cfg.curriculum["joint_acc_standing_weight"].params["weight_stages"] = [
-    {"step": 0,           "weight": -1.0e-7},
-    {"step": 6000 * 24,   "weight": -2.5e-7},
-    {"step": 11000 * 24,  "weight": -4.0e-7},
-  ]
+  # === 4) Initial twist ranges = zero (curriculum widens). ===
+  twist = cfg.commands["twist"]
+  assert isinstance(twist, UniformVelocityHeightWaistCommandCfg)
+  twist.ranges.lin_vel_x = (0.0, 0.0)
+  twist.ranges.lin_vel_y = (0.0, 0.0)
+  twist.ranges.ang_vel_z = (0.0, 0.0)
+  twist.rel_standing_envs = 1.0  # initial; curriculum drives down
 
-  # Waist_yaw range: zero for early training (policy first learns standing
-  # balance with stationary torso), then linearly widens. Narrowed back to
-  # practical teleop range for the late-stage arm-hold phase.
-  cfg.curriculum["waist_yaw_range"] = CurriculumTermCfg(
-    func=waist_yaw_range,
+  # === 5) Velocity range curriculum: zero -> full walking range. ===
+  # Phase A (0 - 3000): pure standing — consolidate the standing baseline.
+  # Phase B (3000 - 7000): gentle walking introduction.
+  # Phase C (7000 - 12000): wider walking.
+  # Phase D (12000+): full walking range.
+  cfg.curriculum["velocity_range"] = CurriculumTermCfg(
+    func=commands_vel,
     params={
       "command_name": "twist",
+      "velocity_stages": [
+        {"step": 0,           "lin_vel_x": (0.0, 0.0),  "lin_vel_y": (0.0, 0.0),  "ang_vel_z": (0.0, 0.0)},
+        {"step": 3000 * 24,   "lin_vel_x": (-0.2, 0.3), "lin_vel_y": (-0.2, 0.2), "ang_vel_z": (-0.3, 0.3)},
+        {"step": 7000 * 24,   "lin_vel_x": (-0.4, 0.6), "lin_vel_y": (-0.3, 0.3), "ang_vel_z": (-0.6, 0.6)},
+        {"step": 12000 * 24,  "lin_vel_x": (-0.5, 1.0), "lin_vel_y": (-0.4, 0.4), "ang_vel_z": (-1.0, 1.0)},
+      ],
+    },
+  )
+
+  # === 6) Standing/walking ratio + nudge curriculum.
+  # Keep nudge gentle throughout — user prefers stability over arm variety.
+  cfg.curriculum["standing_balance"] = CurriculumTermCfg(
+    func=standing_balance,
+    params={
+      "command_name": "twist",
+      "nudge_event_name": "nudge_arms_position",
       "stages": [
-        {"step": 0,           "ranges": (0.0, 0.0)},     # no rotation — standing pre-req
-        {"step": 1500 * 24,   "ranges": (0.0, 0.0)},     # hold zero through 1500 iter
-        {"step": 3500 * 24,   "ranges": (-0.3, 0.3)},    # gentle introduction
-        {"step": 7000 * 24,   "ranges": (-0.7, 0.7)},
-        {"step": 11000 * 24,  "ranges": (-1.2, 1.2)},
-        {"step": 13500 * 24,  "ranges": (-1.4, 1.4)},    # widest
-        {"step": 15000 * 24,  "ranges": (-1.0, 1.0)},    # narrow back for hold
+        {"step": 0,          "rel_standing_envs": 1.0, "nudge_speed": 0.2, "nudge_offset_range": (-0.3, 0.3)},
+        {"step": 3000 * 24,  "rel_standing_envs": 0.7, "nudge_speed": 0.3, "nudge_offset_range": (-0.4, 0.4)},
+        {"step": 7000 * 24,  "rel_standing_envs": 0.5, "nudge_speed": 0.4, "nudge_offset_range": (-0.5, 0.5)},
+        {"step": 12000 * 24, "rel_standing_envs": 0.4, "nudge_speed": 0.5, "nudge_offset_range": (-0.5, 0.5)},
       ],
     },
   )
