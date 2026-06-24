@@ -37,6 +37,7 @@ from src.tasks.velocity.mdp.velocity_command import UniformVelocityHeightCommand
 from src.tasks.velocity.mdp.rewards import (
   action_rate_l2_standing,
   base_ang_vel_standing,
+  feet_air_time,
   feet_clearance,
   feet_gait,
   feet_slip,
@@ -1192,7 +1193,7 @@ def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerB
   )
   # Air time — clean swing prevents hopping. Active while commanded to walk.
   cfg.rewards["feet_air_time"] = RewardTermCfg(
-    func=mdp.feet_air_time,
+    func=feet_air_time,
     weight=1.0,
     params={
       "sensor_name": "feet_ground_contact",
