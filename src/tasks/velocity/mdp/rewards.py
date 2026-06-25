@@ -559,35 +559,41 @@ def joint_acc_l2_standing(
 class leg_symmetry:
   """Penalize left/right leg-joint asymmetry.
 
-  Forces a left/right mirror posture: for the listed joint pairs, the cost
-  is the squared difference between the left and right joint position with
-  the right joint optionally negated (for joints whose default is mirrored).
+  Forces a left/right mirror posture: for the listed joint *functions*, the
+  cost is the squared difference between the left and right joint position
+  with the right joint optionally negated (for joints whose default is
+  mirrored). Use ``functions`` to restrict the joint set, e.g. lateral-only
+  (``("hip_roll", "ankle_roll")``) when symmetry on sagittal joints would
+  block alternating gait.
 
-  Pairs are identified by joint *function* names (without left_/right_):
-  ``hip_pitch``, ``hip_yaw``, ``knee``, ``ankle_pitch``: same sign — left and
-  right should be equal. ``hip_roll``, ``ankle_roll``: opposite sign — right
-  should equal negated left.
+  When ``command_name`` is set, the penalty is masked to standing (command
+  magnitude <= ``command_threshold``). During walking the cost is zero so
+  natural asymmetric gait is not penalised. This is the recommended mode
+  for tasks that mix standing and walking.
 
-  Use this to prevent the "one-leg-out-to-the-side" failure mode during
-  squat (where one hip pulls into abduction while the other doesn't).
+  Default ``functions`` covers all leg DoFs and is intended for tasks where
+  alternating gait is never present (e.g. pure standing).
   """
+
+  _DEFAULT_FUNCTIONS = (
+    "hip_pitch", "hip_yaw", "knee", "ankle_pitch", "hip_roll", "ankle_roll",
+  )
+  _FLIP_SIGN = ("hip_roll", "ankle_roll")
 
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
     asset: Entity = env.scene[cfg.params["asset_cfg"].name]
     joint_names = list(asset.joint_names)
-    # Mirror_sign +1 for symmetric joints, -1 for joints with mirrored defaults.
-    same_sign = ("hip_pitch", "hip_yaw", "knee", "ankle_pitch")
-    flip_sign = ("hip_roll", "ankle_roll")
+    functions = cfg.params.get("functions") or self._DEFAULT_FUNCTIONS
     self.left_ids: list[int] = []
     self.right_ids: list[int] = []
     self.signs: list[float] = []
-    for fn in same_sign + flip_sign:
+    for fn in functions:
       l_name = f"left_{fn}_joint"
       r_name = f"right_{fn}_joint"
       if l_name in joint_names and r_name in joint_names:
         self.left_ids.append(joint_names.index(l_name))
         self.right_ids.append(joint_names.index(r_name))
-        self.signs.append(-1.0 if fn in flip_sign else 1.0)
+        self.signs.append(-1.0 if fn in self._FLIP_SIGN else 1.0)
     self.left_ids_t = torch.tensor(self.left_ids, device=env.device, dtype=torch.long)
     self.right_ids_t = torch.tensor(self.right_ids, device=env.device, dtype=torch.long)
     self.signs_t = torch.tensor(self.signs, device=env.device)
@@ -596,13 +602,25 @@ class leg_symmetry:
     self,
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg,
+    functions: tuple[str, ...] | None = None,
+    command_name: str | None = None,
+    command_threshold: float = 0.1,
   ) -> torch.Tensor:
+    del functions  # consumed in __init__
     asset: Entity = env.scene[asset_cfg.name]
     q = asset.data.joint_pos
     left = q[:, self.left_ids_t]
     right = q[:, self.right_ids_t]
     diff = left - self.signs_t.unsqueeze(0) * right
-    return torch.sum(diff.pow(2), dim=1)
+    cost = torch.sum(diff.pow(2), dim=1)
+    if command_name is not None:
+      command = env.command_manager.get_command(command_name)
+      if command is not None:
+        linear_norm = torch.norm(command[:, :2], dim=1)
+        angular_norm = torch.abs(command[:, 2])
+        is_standing = (linear_norm + angular_norm) <= command_threshold
+        cost = cost * is_standing.float()
+    return cost
 
 
 def motor_overheat_penalty(

@@ -939,7 +939,7 @@ def unitree_g1_flat_balance_standing_env_cfg(play: bool = False) -> ManagerBased
       lin_vel_y=(0.0, 0.0),
       ang_vel_z=(0.0, 0.0),
       heading=old_twist.ranges.heading,
-      base_height=(0.45, 0.78),   # full squat/stand range
+      base_height=(0.40, 0.78),   # full squat/stand range (deeper squat)
       waist_yaw=(0.0, 0.0),       # curriculum widens
     ),
     viz=UniformVelocityCommandCfg.VizCfg(z_offset=1.15),
@@ -1176,8 +1176,11 @@ def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerB
       "asset_cfg": SceneEntityCfg("robot", site_names=_foot_sites),
     },
   )
+  # Foot_slip bumped 4x (-0.25 → -1.0): in-place rotation was *shuffling*
+  # feet on the ground instead of stepping. Strong slip penalty pushes the
+  # policy to lift feet (stepping turn) instead of sliding through rotation.
   cfg.rewards["foot_slip"] = RewardTermCfg(
-    func=feet_slip, weight=-0.25,
+    func=feet_slip, weight=-1.0,
     params={
       "sensor_name": "feet_ground_contact", "command_name": "twist",
       "command_threshold": 0.1,
@@ -1203,13 +1206,22 @@ def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerB
     },
   )
 
-  # === 4) Symmetry penalty — prevents "one leg out" during squat. ===
+  # === 4) Symmetry penalty — prevents "one leg out" during squat.
+  # Masked to STANDING ONLY (command_threshold=0.1). During walking the
+  # penalty is zero, so natural alternating gait is unconstrained. This
+  # fixes the backward-hopping regression: earlier the symmetry penalty on
+  # sagittal joints (hip_pitch/knee/ankle_pitch) made symmetric two-leg
+  # hopping cheaper than alternating reverse gait.
   cfg.rewards["leg_symmetry"] = RewardTermCfg(
     func=leg_symmetry,
     weight=-2.0,
-    params={"asset_cfg": SceneEntityCfg(
-      "robot", joint_names=(".*_hip_.*", ".*_knee_.*", ".*_ankle_.*"),
-    )},
+    params={
+      "asset_cfg": SceneEntityCfg(
+        "robot", joint_names=(".*_hip_.*", ".*_knee_.*", ".*_ankle_.*"),
+      ),
+      "command_name": "twist",
+      "command_threshold": 0.1,
+    },
   )
 
   # === 5) Soften lateral-hip deviation so in-place rotation works. ===
