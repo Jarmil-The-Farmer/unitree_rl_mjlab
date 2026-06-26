@@ -474,19 +474,32 @@ def stand_still_lin_vel(
 def joint_deviation_l2(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  command_name: str | None = None,
+  command_threshold: float = 0.1,
 ) -> torch.Tensor:
   """Penalize deviation of specified joints from their default positions.
 
-  Returns sum of squared errors for the joints in asset_cfg.
-  Use this as a dedicated penalty for joints that should stay near zero
-  (e.g. hip_roll, hip_yaw) instead of relying on the averaged pose reward.
+  Returns sum of squared errors for the joints in asset_cfg. When
+  ``command_name`` is given, the penalty is masked to STANDING (commanded
+  total vel <= ``command_threshold``). Use the standing mask for joints
+  whose default position is fine for standing but conflicts with normal
+  walking biomechanics (e.g. waist_pitch must be free to lean slightly
+  during reverse gait).
   """
   asset: Entity = env.scene[asset_cfg.name]
   diff = (
     asset.data.joint_pos[:, asset_cfg.joint_ids]
     - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
   )
-  return torch.sum(torch.square(diff), dim=1)
+  cost = torch.sum(torch.square(diff), dim=1)
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      is_standing = (linear_norm + angular_norm) <= command_threshold
+      cost = cost * is_standing.float()
+  return cost
 
 
 def base_ang_vel_standing(

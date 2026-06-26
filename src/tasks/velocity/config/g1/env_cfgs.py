@@ -1125,24 +1125,52 @@ def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerB
   cfg = unitree_g1_flat_balance_standing_env_cfg(play=play)
 
   # === 1) Pose tolerances ===
-  # Walking: allow gait swing (hip_pitch / knee / ankle_pitch), but still
-  # shape the pose. Waist stays tight at all speeds.
+  # Match upstream mjlab G1 values (which walks fine forward AND backward):
+  # waist_pitch 0.1 walking / 0.2 running — TIGHT, so the policy keeps the
+  # torso upright during gait. waist_roll similarly tight.
+  # Previous hopping-when-reversing was NOT caused by the tight pose std
+  # but by the EXTRA dedicated waist_pitch_deviation reward (unbounded L2,
+  # weight -5.0, always active) on top of the pose. With both active the
+  # torso was so locked that reverse gait was impossible — hop became the
+  # only feasible strategy. Removing the extra reward during walking (mask
+  # below) fixes that without unlocking the waist.
+  # Knee / hip_pitch / ankle_pitch are LOOSER than upstream because the
+  # policy must walk at any commanded height in (0.40, 0.78). A deep squat
+  # to 0.40 m needs ~1.0 rad knee bend; upstream's std_walking knee=0.35
+  # collapses the pose reward to ~0 at that bend (exp(-8)). Sizing the
+  # walking std so a ~0.7 rad deviation still retains ~50% of the reward.
   _walking_pose_std = {
-    r".*hip_pitch.*": 0.6,
-    r".*hip_roll.*": 0.25,
-    r".*hip_yaw.*": 0.2,
+    r".*hip_pitch.*": 0.5,
+    r".*hip_roll.*": 0.15,
+    r".*hip_yaw.*": 0.15,
     r".*knee.*": 0.6,
     r".*ankle_pitch.*": 0.35,
-    r".*ankle_roll.*": 0.15,
-    r".*waist_roll.*": 0.5,
-    r".*waist_pitch.*": 0.15,  # tight — no forward lean
+    r".*ankle_roll.*": 0.1,
+    r".*waist_roll.*": 0.15,
+    r".*waist_pitch.*": 0.12,  # tight (upstream uses 0.1); barely any lean
   }
-  _running_pose_std = dict(_walking_pose_std)
-  _running_pose_std[r".*hip_pitch.*"] = 0.8
-  _running_pose_std[r".*knee.*"] = 0.8
-  _running_pose_std[r".*ankle_pitch.*"] = 0.45
+  _running_pose_std = {
+    r".*hip_pitch.*": 0.7,
+    r".*hip_roll.*": 0.2,
+    r".*hip_yaw.*": 0.2,
+    r".*knee.*": 0.8,
+    r".*ankle_pitch.*": 0.45,
+    r".*ankle_roll.*": 0.15,
+    r".*waist_roll.*": 0.15,
+    r".*waist_pitch.*": 0.2,
+  }
   cfg.rewards["pose"].params["std_walking"] = _walking_pose_std
   cfg.rewards["pose"].params["std_running"] = _running_pose_std
+
+  # Mask the dedicated waist deviation penalties to STANDING only. During
+  # walking the bounded pose reward above is the ONLY waist constraint
+  # (same as upstream). During standing, the L2 deviation kicks in on top
+  # to keep the torso strictly upright. The thermal penalty (always-active)
+  # still protects motors regardless.
+  cfg.rewards["waist_pitch_deviation"].params["command_name"] = "twist"
+  cfg.rewards["waist_pitch_deviation"].params["command_threshold"] = 0.1
+  cfg.rewards["waist_roll_deviation"].params["command_name"] = "twist"
+  cfg.rewards["waist_roll_deviation"].params["command_threshold"] = 0.1
 
   # === 2) Velocity tracking — bumped to upstream-G1 level. ===
   # Inherited std_standing keeps tight sagittal — apply by *increasing*
