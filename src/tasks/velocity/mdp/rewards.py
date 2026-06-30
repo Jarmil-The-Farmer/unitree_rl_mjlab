@@ -476,6 +476,7 @@ def joint_deviation_l2(
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   command_name: str | None = None,
   command_threshold: float = 0.1,
+  log_name: str | None = None,
 ) -> torch.Tensor:
   """Penalize deviation of specified joints from their default positions.
 
@@ -485,6 +486,9 @@ def joint_deviation_l2(
   whose default position is fine for standing but conflicts with normal
   walking biomechanics (e.g. waist_pitch must be free to lean slightly
   during reverse gait).
+
+  If ``log_name`` is set, the mean absolute deviation across the matched
+  joints is logged under ``Metrics/<log_name>`` so it shows in tensorboard.
   """
   asset: Entity = env.scene[asset_cfg.name]
   diff = (
@@ -492,6 +496,8 @@ def joint_deviation_l2(
     - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
   )
   cost = torch.sum(torch.square(diff), dim=1)
+  if log_name is not None and "log" in env.extras:
+    env.extras["log"][f"Metrics/{log_name}"] = diff.abs().mean()
   if command_name is not None:
     command = env.command_manager.get_command(command_name)
     if command is not None:
@@ -634,6 +640,40 @@ class leg_symmetry:
         is_standing = (linear_norm + angular_norm) <= command_threshold
         cost = cost * is_standing.float()
     return cost
+
+
+def pelvis_orientation_standing(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  command_name: str | None = None,
+  command_threshold: float = 0.1,
+  lateral_only: bool = True,
+) -> torch.Tensor:
+  """Penalize pelvis (root link) tilt when commanded to stand still.
+
+  Uses ``projected_gravity_b`` of the root link. When ``lateral_only``,
+  only the Y component (sideways tilt) is penalised — the pelvis may still
+  pitch slightly forward/backward (needed for squat compensation). Set
+  False to penalise both axes.
+
+  Standing-only mask (default): active when commanded total vel <=
+  ``command_threshold``. During walking, pelvis tilt is shaped by the
+  always-active ``body_orientation_l2`` reward (typically a smaller weight).
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  pg = asset.data.projected_gravity_b  # [B, 3]
+  if lateral_only:
+    cost = pg[:, 1].pow(2)
+  else:
+    cost = pg[:, :2].pow(2).sum(dim=1)
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    if command is not None:
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      is_standing = (linear_norm + angular_norm) <= command_threshold
+      cost = cost * is_standing.float()
+  return cost
 
 
 def motor_overheat_penalty(

@@ -13,6 +13,7 @@ from mjlab.envs import mdp as envs_mdp
 from mjlab.envs.mdp import dr
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
@@ -45,11 +46,18 @@ from src.tasks.velocity.mdp.rewards import (
   joint_deviation_l2,
   leg_symmetry,
   motor_overheat_penalty,
+  pelvis_orientation_standing,
   soft_landing,
   stand_still_lin_vel,
   track_angular_velocity,
   track_base_height,
   track_linear_velocity_no_z,
+)
+from src.tasks.velocity.mdp.metrics import (
+  foot_spread_lateral,
+  hip_roll_abs_mean,
+  pelvis_pitch_abs,
+  pelvis_roll_abs,
 )
 from src.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
@@ -1162,15 +1170,56 @@ def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerB
   cfg.rewards["pose"].params["std_walking"] = _walking_pose_std
   cfg.rewards["pose"].params["std_running"] = _running_pose_std
 
-  # Mask the dedicated waist deviation penalties to STANDING only. During
-  # walking the bounded pose reward above is the ONLY waist constraint
-  # (same as upstream). During standing, the L2 deviation kicks in on top
-  # to keep the torso strictly upright. The thermal penalty (always-active)
-  # still protects motors regardless.
+  # Mask waist_pitch_deviation to STANDING only — reverse gait needs a free
+  # waist (see iter 3 log). waist_roll deviation stays active at all times
+  # but with a lighter weight, to suppress sideways torso lean during turns
+  # without preventing tiny balance compensations.
   cfg.rewards["waist_pitch_deviation"].params["command_name"] = "twist"
   cfg.rewards["waist_pitch_deviation"].params["command_threshold"] = 0.1
-  cfg.rewards["waist_roll_deviation"].params["command_name"] = "twist"
-  cfg.rewards["waist_roll_deviation"].params["command_threshold"] = 0.1
+  cfg.rewards["waist_roll_deviation"].weight = -3.0  # active at all times
+
+  # Hip_roll deviation: prevents symmetric "wide-spread legs" at squat.
+  # leg_symmetry (with flip_sign for hip_roll) doesn't catch symmetric
+  # spread — both legs going out evenly sums to ~0 in (L + R). Use a
+  # dedicated L2 on the absolute hip_roll positions, masked to standing
+  # so it doesn't fight the gait's natural lateral steps.
+  cfg.rewards["hip_roll_deviation"] = RewardTermCfg(
+    func=joint_deviation_l2,
+    weight=-3.0,
+    params={
+      "asset_cfg": SceneEntityCfg("robot", joint_names=(".*_hip_roll_joint",)),
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "log_name": "hip_roll_deviation_mean",
+    },
+  )
+
+  # Dedicated pelvis-lateral-tilt penalty during STANDING. The general
+  # body_orientation_l2 (always active, weight -8.0) covers torso/pelvis
+  # tilt at all speeds, but isn't strong enough to keep the pelvis dead-
+  # level when commanded to stand. This adds an extra L2 on the sideways
+  # (Y) projected-gravity component, masked to standing-only.
+  # NOTE: pelvis tilt usually comes from asymmetric hip_roll → the
+  # leg_symmetry penalty (also standing-masked, flip_sign for hip_roll)
+  # tackles the cause, this term tackles the symptom.
+  cfg.rewards["pelvis_roll_standing"] = RewardTermCfg(
+    func=pelvis_orientation_standing,
+    weight=-15.0,
+    params={
+      "asset_cfg": SceneEntityCfg("robot"),
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "lateral_only": True,
+    },
+  )
+
+  # Diagnostic metrics — episode-mean is logged under Episode_Metrics/ in
+  # TensorBoard. Use these to track lateral lean and leg spread during
+  # training without affecting the reward sum.
+  cfg.metrics["foot_spread_lateral"] = MetricsTermCfg(func=foot_spread_lateral)
+  cfg.metrics["pelvis_roll_abs"] = MetricsTermCfg(func=pelvis_roll_abs)
+  cfg.metrics["pelvis_pitch_abs"] = MetricsTermCfg(func=pelvis_pitch_abs)
+  cfg.metrics["hip_roll_abs_mean"] = MetricsTermCfg(func=hip_roll_abs_mean)
 
   # === 2) Velocity tracking — bumped to upstream-G1 level. ===
   # Inherited std_standing keeps tight sagittal — apply by *increasing*
