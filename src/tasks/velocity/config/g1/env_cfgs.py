@@ -58,6 +58,7 @@ from src.tasks.velocity.mdp.metrics import (
   hip_roll_abs_mean,
   pelvis_pitch_abs,
   pelvis_roll_abs,
+  waist_roll_abs,
 )
 from src.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
 
@@ -857,7 +858,7 @@ def unitree_g1_flat_balance_standing_env_cfg(play: bool = False) -> ManagerBased
     r".*knee.*": 10.0,
     r".*ankle_pitch.*": 10.0,
     r".*ankle_roll.*": 0.12,
-    r".*waist_roll.*": 0.5,
+    r".*waist_roll.*": 0.15,   # TIGHT — was 0.5 (loose); fixes sideways waist tilt
     r".*waist_pitch.*": 0.15,  # TIGHT — no forward lean
   }
   # Drop walking std dicts (not used in standing-only) safely.
@@ -1172,11 +1173,11 @@ def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerB
 
   # Mask waist_pitch_deviation to STANDING only — reverse gait needs a free
   # waist (see iter 3 log). waist_roll deviation stays active at all times
-  # but with a lighter weight, to suppress sideways torso lean during turns
-  # without preventing tiny balance compensations.
+  # AND with a stronger weight — fine-tune iter 5 showed asymmetric waist
+  # tilt to the right side, std_standing also tightened (see iter 5 note).
   cfg.rewards["waist_pitch_deviation"].params["command_name"] = "twist"
   cfg.rewards["waist_pitch_deviation"].params["command_threshold"] = 0.1
-  cfg.rewards["waist_roll_deviation"].weight = -3.0  # active at all times
+  cfg.rewards["waist_roll_deviation"].weight = -6.0  # bumped from -3.0
 
   # Hip_roll deviation: prevents symmetric "wide-spread legs" at squat.
   # leg_symmetry (with flip_sign for hip_roll) doesn't catch symmetric
@@ -1220,6 +1221,7 @@ def unitree_g1_flat_balance_height_waist_env_cfg(play: bool = False) -> ManagerB
   cfg.metrics["pelvis_roll_abs"] = MetricsTermCfg(func=pelvis_roll_abs)
   cfg.metrics["pelvis_pitch_abs"] = MetricsTermCfg(func=pelvis_pitch_abs)
   cfg.metrics["hip_roll_abs_mean"] = MetricsTermCfg(func=hip_roll_abs_mean)
+  cfg.metrics["waist_roll_abs"] = MetricsTermCfg(func=waist_roll_abs)
 
   # === 2) Velocity tracking — bumped to upstream-G1 level. ===
   # Inherited std_standing keeps tight sagittal — apply by *increasing*

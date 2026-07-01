@@ -57,6 +57,23 @@ def pelvis_pitch_abs(
   return asset.data.projected_gravity_b[:, 0].abs()
 
 
+def waist_roll_abs(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Absolute value of the waist_roll joint position [rad].
+
+  Tracks sideways waist (torso) tilt — distinct from pelvis tilt which
+  comes from asymmetric hip_roll.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  joint_names = list(asset.joint_names)
+  if "waist_roll_joint" not in joint_names:
+    return torch.zeros(env.num_envs, device=env.device)
+  jid = joint_names.index("waist_roll_joint")
+  return asset.data.joint_pos[:, jid].abs()
+
+
 def hip_roll_abs_mean(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
